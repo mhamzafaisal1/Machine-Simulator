@@ -64,16 +64,17 @@ async function runSimulator() {
         console.error(`[${new Date().toISOString()}] ❌ Error inserting ${stateType} state:`, error.message);
       }
     }
-    
     async function simulateCounts(db, runningState) {
       const collection = db.collection(countCollectionName);
-
-      const delayMs = (Math.floor(Math.random() * (15 - 4 + 1)) + 4) * 1000; // 4-15 seconds in milliseconds
+      const delayMs = (Math.floor(Math.random() * (15 - 4 + 1)) + 4) * 1000; // 4-15 sec
+    
       countTimeout = setTimeout(async () => {
         try {
-          const operator = getRandomOperators()[0]; // Pick one operator
+          const operatorList = runningState.operators;
+          const operator = operatorList[Math.floor(Math.random() * operatorList.length)];
+    
           const itemId = Object.values(runningState.program.items)[0].number;
-
+    
           const countRecord = {
             timestamp: new Date(),
             machine: runningState.machine,
@@ -81,25 +82,23 @@ async function runSimulator() {
             operator,
             item: {
               id: itemId,
-              name: "None Entered",     // Placeholder
-              standard: 666             // Placeholder
+              name: "None Entered",  // Placeholder
+              standard: 666          // Placeholder
             },
             station: 1,
             lane: 1
           };
-
+    
           await collection.insertOne(countRecord);
           console.log(`[${new Date().toISOString()}] ✅ Count inserted`);
           console.log(`   📦 Item ID: ${itemId}`);
           console.log(`   👤 Operator: ${operator.name} (${operator.code})`);
           console.log(`   🔧 Machine: ${runningState.machine.name}`);
-          
-          // Get updated count collection stats
+    
           const updatedStats = await db.command({ collStats: countCollectionName });
           console.log(`   📈 Total documents in count collection: ${updatedStats.count}`);
           console.log('   ──────────────────────────────────────────────');
-
-          // Recurse only if we still have a valid timeout (machine is still running)
+    
           if (countTimeout) {
             simulateCounts(db, runningState);
           }
@@ -107,10 +106,10 @@ async function runSimulator() {
           console.error(`[${new Date().toISOString()}] ❌ Error inserting count:`, error.message);
         }
       }, delayMs);
-      
-      console.log(`[${new Date().toISOString()}] ⏰ Next count in ${delayMs/1000} seconds`);
+    
+      console.log(`[${new Date().toISOString()}] ⏰ Next count in ${delayMs / 1000} seconds`);
     }
-
+    
     async function simulationLoop() {
       console.log(`[${new Date().toISOString()}] 🚀 Starting simulation loop...`);
       
