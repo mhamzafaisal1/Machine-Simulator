@@ -1,4 +1,4 @@
-// config.js
+// config.js - Auto-generated from CLI arguments
 module.exports = {
     // MongoDB connection matching chitrac-api structure
     mongoUri: 'mongodb://localhost:27017/chitrac',
@@ -6,13 +6,14 @@ module.exports = {
     collectionName: 'state-simulated',
     countCollectionName: 'count-simulated',
   
-    // Machine data matching chitrac-api defaults
+    // Machine data from CLI arguments
     machine: {
-      serial: 67800,
+      serial: 67798,
       name: 'SPL1',
       ipAddress: '192.168.0.11',
       active: true,
-      lanes: 4
+      lanes: 3, // Determined by machine type
+      type: 'LPL' // Machine type from CLI
     },
   
     // Item IDs matching chitrac-api defaults (using 'number' field)
@@ -30,6 +31,8 @@ module.exports = {
       { code: 135797, name: "Natalie Chavez", active: true },
       { code: 135798, name: "Akura Coleman", active: true },
       { code: 135799, name: "Lakeesha Davis", active: true }
-    ]
+    ],
+
+    // Station-specific operator assignments (operators per station)
+    operatorsPerStation: 1 // Number of operators assigned to each station
   };
-  

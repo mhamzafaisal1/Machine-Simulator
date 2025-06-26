@@ -1,117 +1,132 @@
 // worker.js
 const { MongoClient } = require('mongodb');
-const { mongoUri, dbName, collectionName, countCollectionName } = require('./config');
-const { getRandomDelay, buildStateRecord, getRandomOperators } = require('./utils');
+const config = require('./config');
+const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations } = require('./utils');
 
 async function runSimulator() {
   console.log(`[${new Date().toISOString()}] Starting machine simulator...`);
-  console.log(`[${new Date().toISOString()}] Connecting to MongoDB: ${mongoUri}`);
-  console.log(`[${new Date().toISOString()}] Database: ${dbName}, Collections: ${collectionName}, ${countCollectionName}`);
+  console.log(`[${new Date().toISOString()}] Connecting to MongoDB: ${config.mongoUri}`);
+  console.log(`[${new Date().toISOString()}] Database: ${config.dbName}, Collections: ${config.collectionName}, ${config.countCollectionName}`);
   
-  const client = new MongoClient(mongoUri);
+  const client = new MongoClient(config.mongoUri);
   
   try {
     await client.connect();
     console.log(`[${new Date().toISOString()}] ✅ Successfully connected to MongoDB`);
     
-    const db = client.db(dbName);
-    const stateCollection = db.collection(collectionName);
-    const countCollection = db.collection(countCollectionName);
+    const db = client.db(config.dbName);
+    const stateCollection = db.collection(config.collectionName);
+    const countCollection = db.collection(config.countCollectionName);
     
     // Test the connection by getting collection stats
-    const stateStats = await db.command({ collStats: collectionName });
-    const countStats = await db.command({ collStats: countCollectionName });
+    const stateStats = await db.command({ collStats: config.collectionName });
+    const countStats = await db.command({ collStats: config.countCollectionName });
     console.log(`[${new Date().toISOString()}] 📊 State collection: ${stateStats.count} documents`);
     console.log(`[${new Date().toISOString()}] 📊 Count collection: ${countStats.count} documents`);
     
-    // Variable to track count timeout
-    let countTimeout = null;
+    // Variables to track count timeouts for each station
+    const countTimeouts = new Map();
     let currentRunningState = null;
     
     async function writeState(stateType) {
       try {
-        // Clear count timeout if machine is stopping
+        // Clear all count timeouts if machine is stopping
         if (stateType === "Timeout" || stateType === "Fault") {
-          if (countTimeout) {
-            clearTimeout(countTimeout);
-            countTimeout = null;
-            currentRunningState = null;
-            console.log(`[${new Date().toISOString()}] 🛑 Stopped count generation (${stateType} state)`);
-          }
+          countTimeouts.forEach((timeout, station) => {
+            clearTimeout(timeout);
+            console.log(`[${new Date().toISOString()}] 🛑 Stopped count generation for station ${station} (${stateType} state)`);
+          });
+          countTimeouts.clear();
+          currentRunningState = null;
         }
         
         const record = buildStateRecord(stateType);
         const result = await stateCollection.insertOne(record);
+        const activeStations = getActiveStations();
         
         console.log(`[${new Date().toISOString()}] ✅ Inserted ${stateType} state`);
         console.log(`   📝 Document ID: ${result.insertedId}`);
         console.log(`   🕐 Timestamp: ${record.timestamp.toISOString()}`);
-        console.log(`   🔧 Machine: ${record.machine.name} (${record.machine.serial})`);
+        console.log(`   🔧 Machine: ${record.machine.name} (${record.machine.serial}) - Type: ${config.machine.type}`);
         console.log(`   📊 Status: ${record.status.name} (Code: ${record.status.code})`);
+        console.log(`   🏭 Active Stations: ${activeStations.join(', ')} (Lanes: ${config.machine.lanes})`);
         
         // Get updated collection count
-        const updatedStats = await db.command({ collStats: collectionName });
+        const updatedStats = await db.command({ collStats: config.collectionName });
         console.log(`   📈 Total documents in state collection: ${updatedStats.count}`);
         console.log('   ──────────────────────────────────────────────');
         
         // Start count generation if machine is running
         if (stateType === "Running") {
           currentRunningState = record;
-          simulateCounts(db, record);
+          // Start count generation for each active station
+          record.operators.forEach(operator => {
+            if (operator.id > 0 && operator.id < 900000) { // Real operator (not dummy or -1)
+              simulateStationCounts(db, record, operator.station, operator);
+            }
+          });
         }
         
       } catch (error) {
         console.error(`[${new Date().toISOString()}] ❌ Error inserting ${stateType} state:`, error.message);
       }
     }
-    async function simulateCounts(db, runningState) {
-      const collection = db.collection(countCollectionName);
+
+    async function simulateStationCounts(db, runningState, station, operator) {
+      const collection = db.collection(config.countCollectionName);
       const delayMs = (Math.floor(Math.random() * (15 - 4 + 1)) + 4) * 1000; // 4-15 sec
     
-      countTimeout = setTimeout(async () => {
+      const timeout = setTimeout(async () => {
         try {
-          const operatorList = runningState.operators;
-          const operator = operatorList[Math.floor(Math.random() * operatorList.length)];
-    
-          const itemId = Object.values(runningState.program.items)[0].number;
+          // Get item ID for this station (for now, same as first item)
+          const itemId = Object.values(runningState.program.items)[0].id;
     
           const countRecord = {
             timestamp: new Date(),
             machine: runningState.machine,
             program: runningState.program,
-            operator,
+            operator: {
+              id: operator.id,
+              name: "None Entered" // We'll need to map operator ID to name
+            },
             item: {
               id: itemId,
-              name: "None Entered",  // Placeholder
-              standard: 666          // Placeholder
+              name: "None Entered",
+              standard: 666
             },
-            station: 1,
-            lane: 1
+            station: station,
+            lane: station // Lane matches station
           };
     
           await collection.insertOne(countRecord);
-          console.log(`[${new Date().toISOString()}] ✅ Count inserted`);
+          console.log(`[${new Date().toISOString()}] ✅ Count inserted for station ${station}`);
           console.log(`   📦 Item ID: ${itemId}`);
-          console.log(`   👤 Operator: ${operator.name} (${operator.code})`);
+          console.log(`   👤 Operator: ${operator.name || 'Unknown'} (${operator.id})`);
           console.log(`   🔧 Machine: ${runningState.machine.name}`);
+          console.log(`   🏭 Station: ${station}, Lane: ${station}`);
     
-          const updatedStats = await db.command({ collStats: countCollectionName });
+          const updatedStats = await db.command({ collStats: config.countCollectionName });
           console.log(`   📈 Total documents in count collection: ${updatedStats.count}`);
           console.log('   ──────────────────────────────────────────────');
     
-          if (countTimeout) {
-            simulateCounts(db, runningState);
+          // Continue count generation for this station if still running
+          if (countTimeouts.has(station)) {
+            simulateStationCounts(db, runningState, station, operator);
           }
         } catch (error) {
-          console.error(`[${new Date().toISOString()}] ❌ Error inserting count:`, error.message);
+          console.error(`[${new Date().toISOString()}] ❌ Error inserting count for station ${station}:`, error.message);
         }
       }, delayMs);
     
-      console.log(`[${new Date().toISOString()}] ⏰ Next count in ${delayMs / 1000} seconds`);
+      // Store timeout reference for this station
+      countTimeouts.set(station, timeout);
+      console.log(`[${new Date().toISOString()}] ⏰ Next count for station ${station} in ${delayMs / 1000} seconds`);
     }
     
     async function simulationLoop() {
       console.log(`[${new Date().toISOString()}] 🚀 Starting simulation loop...`);
+      const activeStations = getActiveStations();
+      console.log(`[${new Date().toISOString()}] 🏭 Simulating machine type: ${config.machine.type} with active stations: ${activeStations.join(', ')}`);
       
       while (true) {
         await writeState("Timeout");

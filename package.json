@@ -1,14 +1,20 @@
 {
   "name": "machine-simulator",
   "version": "1.0.0",
-  "main": "config.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "main": "machine-simulator.js",
+  "bin": {
+    "machine-simulator": "./machine-simulator.js"
   },
-  "keywords": [],
+  "scripts": {
+    "start": "node machine-simulator.js",
+    "worker": "node worker.js",
+    "test": "node test-config.js",
+    "help": "node machine-simulator.js --help"
+  },
+  "keywords": ["simulator", "machine", "manufacturing", "mongodb"],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Multi-station machine simulator for ChiTrac system",
   "dependencies": {
     "mongodb": "^6.17.0"
   }
