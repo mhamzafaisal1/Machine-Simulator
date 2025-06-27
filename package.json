@@ -1,20 +1,24 @@
 {
   "name": "machine-simulator",
   "version": "1.0.0",
-  "main": "machine-simulator.js",
+  "main": "fillmore-simulator.js",
   "bin": {
-    "machine-simulator": "./machine-simulator.js"
+    "machine-simulator": "./machine-simulator.js",
+    "fillmore-simulator": "./fillmore-simulator.js"
   },
   "scripts": {
-    "start": "node machine-simulator.js",
+    "start": "node fillmore-simulator.js",
+    "single": "node machine-simulator.js",
     "worker": "node worker.js",
     "test": "node test-config.js",
-    "help": "node machine-simulator.js --help"
+    "validate": "node -e \"require('./fillmore-machines').validateAllMachines()\"",
+    "help": "node machine-simulator.js --help",
+    "fillmore-help": "node fillmore-simulator.js --help"
   },
-  "keywords": ["simulator", "machine", "manufacturing", "mongodb"],
+  "keywords": ["simulator", "machine", "manufacturing", "mongodb", "fillmore", "chitrac"],
   "author": "",
   "license": "ISC",
-  "description": "Multi-station machine simulator for ChiTrac system",
+  "description": "Multi-station machine simulator for ChiTrac system - supports individual machines and full Fillmore facility simulation",
   "dependencies": {
     "mongodb": "^6.17.0"
   }

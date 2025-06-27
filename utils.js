@@ -10,9 +10,17 @@ function getRandomOperators() {
   return shuffled.slice(0, 8);
 }
 
-function getActiveStations() {
-  // Determine active stations based on lanes configuration
-  const lanes = config.machine.lanes;
+function getActiveStations(machineConfig = null) {
+  // Use provided machine config or fall back to default config
+  const targetConfig = machineConfig || config.machine;
+  
+  // If machine config has stations array, use it directly
+  if (targetConfig.stations && Array.isArray(targetConfig.stations)) {
+    return targetConfig.stations;
+  }
+  
+  // Otherwise, determine active stations based on lanes configuration
+  const lanes = targetConfig.lanes;
   
   switch (lanes) {
     case 1:
@@ -28,10 +36,11 @@ function getActiveStations() {
   }
 }
 
-function getStationOperators() {
+function getStationOperators(machineConfig = null) {
   const shuffled = config.operatorPool.sort(() => 0.5 - Math.random());
   const operators = [];
-  const activeStations = getActiveStations();
+  const activeStations = getActiveStations(machineConfig);
+  const targetConfig = machineConfig || config.machine;
   
   // Create operators array for all 4 stations (1-4)
   for (let station = 1; station <= 4; station++) {
@@ -48,7 +57,7 @@ function getStationOperators() {
       if (station === 2 && !activeStations.includes(2)) {
         // Station 2 gets dummy operator (9 + machine serial) for Blanket machines
         operators.push({
-          id: parseInt('9' + config.machine.serial.toString()),
+          id: parseInt('9' + targetConfig.serial.toString()),
           station: station
         });
       } else {
@@ -78,7 +87,7 @@ function getRandomItemPerStation() {
   return items;
 }
 
-function buildStateRecord(stateType) {
+function buildStateRecord(stateType, machineConfig = null) {
   const statusMap = {
     Timeout: { code: 0, name: "Timeout", softrolColor: "Grey" },
     Running: { code: 1, name: "Run", softrolColor: "Green" },
@@ -87,15 +96,16 @@ function buildStateRecord(stateType) {
 
   const status = stateType === "Fault" ? statusMap.Fault : statusMap[stateType];
   const items = getRandomItemPerStation();
-  const operators = getStationOperators();
-  const activeStations = getActiveStations();
+  const operators = getStationOperators(machineConfig);
+  const activeStations = getActiveStations(machineConfig);
+  const targetConfig = machineConfig || config.machine;
 
   return {
     timestamp: new Date(),
     machine: {
-      serial: config.machine.serial,
-      name: config.machine.name,
-      ipAddress: config.machine.ipAddress
+      serial: targetConfig.serial,
+      name: targetConfig.name,
+      ipAddress: targetConfig.ipAddress
     },
     program: {
       mode: "smallPiece",
@@ -103,7 +113,7 @@ function buildStateRecord(stateType) {
       batchNumber: Math.floor(Math.random() * 21) + 20,
       accountNumber: 0,
       speed: 0,
-      stations: config.machine.lanes, // Use lanes count as stations
+      stations: targetConfig.lanes, // Use lanes count as stations
       items
     },
     operators: operators,
