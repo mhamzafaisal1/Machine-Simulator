@@ -13,8 +13,8 @@ class MachineSimulator {
     // MongoDB configuration
     this.mongoUri = 'mongodb://localhost:27017/chitrac';
     this.dbName = 'chitrac';
-    this.collectionName = 'state-simulated';
-    this.countCollectionName = 'count-simulated';
+    this.collectionName = 'state';
+    this.countCollectionName = 'count';
   }
 
   async start() {
@@ -198,13 +198,29 @@ class MachineSimulator {
 // Export for use as module
 module.exports = MachineSimulator;
 
-// If this file is run directly, create a simple test
+// If this file is run directly, get machine config from environment or use test machine
 if (require.main === module) {
   const { getActiveMachines } = require('./fillmore-machines');
   
-  async function testWorker() {
-    const testMachine = getActiveMachines()[0]; // Get first active machine
-    const simulator = new MachineSimulator(testMachine);
+  async function startWorker() {
+    let machineConfig;
+    
+    // Check if machine config is provided via environment variable (from process manager)
+    if (process.env.MACHINE_CONFIG) {
+      try {
+        machineConfig = JSON.parse(process.env.MACHINE_CONFIG);
+        console.log(`[${new Date().toISOString()}] 📦 Using machine config from environment: ${machineConfig.name}`);
+      } catch (error) {
+        console.error(`[${new Date().toISOString()}] ❌ Failed to parse MACHINE_CONFIG environment variable:`, error.message);
+        process.exit(1);
+      }
+    } else {
+      // Fallback to first active machine for testing
+      machineConfig = getActiveMachines()[0];
+      console.log(`[${new Date().toISOString()}] 🧪 Using test machine config: ${machineConfig.name}`);
+    }
+    
+    const simulator = new MachineSimulator(machineConfig);
     
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
@@ -222,5 +238,5 @@ if (require.main === module) {
     await simulator.start();
   }
   
-  testWorker().catch(console.error);
+  startWorker().catch(console.error);
 } 

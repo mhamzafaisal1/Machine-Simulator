@@ -70,8 +70,8 @@ module.exports = {
     // MongoDB connection matching chitrac-api structure
     mongoUri: 'mongodb://localhost:27017/chitrac',
     dbName: 'chitrac',
-    collectionName: 'state-simulated',
-    countCollectionName: 'count-simulated',
+    collectionName: 'state',
+    countCollectionName: 'count',
   
     // Machine data from CLI arguments
     machine: {
