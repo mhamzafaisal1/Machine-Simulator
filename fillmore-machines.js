@@ -3,9 +3,18 @@ const simulatedMachineSchema = require('./schemas/simulatedMachineSchema');
 
 // All Fillmore machines configuration
 const fillmoreMachines = [
-  // SPF Machines (5 total) - Single station each
+  // SPF Machines (6 total) - Single station each
   {
-    serial: 68012,
+    serial: 67808,
+    name: 'SPF1',
+    active: true,
+    ipAddress: '192.168.0.2',
+    lanes: 1,
+    stations: [1],
+    type: 'SPF',
+    groups: []
+  },{
+    serial: 67806,
     name: 'SPF2',
     active: true,
     ipAddress: '192.168.0.2',
@@ -15,7 +24,7 @@ const fillmoreMachines = [
     groups: []
   },
   {
-    serial: 68013,
+    serial: 67807,
     name: 'SPF3',
     active: true,
     ipAddress: '192.168.0.3',
@@ -25,7 +34,7 @@ const fillmoreMachines = [
     groups: []
   },
   {
-    serial: 68014,
+    serial: 67805,
     name: 'SPF4',
     active: true,
     ipAddress: '192.168.0.4',
@@ -35,7 +44,7 @@ const fillmoreMachines = [
     groups: []
   },
   {
-    serial: 68015,
+    serial: 67804,
     name: 'SPF5',
     active: true,
     ipAddress: '192.168.0.5',
@@ -45,7 +54,7 @@ const fillmoreMachines = [
     groups: []
   },
   {
-    serial: 68016,
+    serial: 67803,
     name: 'SPF6',
     active: true,
     ipAddress: '192.168.0.6',
