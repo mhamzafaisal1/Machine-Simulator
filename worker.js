@@ -42,6 +42,7 @@ async function runSimulator() {
         
         const record = buildStateRecord(stateType);
         const result = await stateCollection.insertOne(record);
+        delete record['_id'];
         const activeStations = getActiveStations();
         
         // Upsert latest state into stateTicker collection
