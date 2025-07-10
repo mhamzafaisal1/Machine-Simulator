@@ -92,6 +92,7 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const stateCollection = db.collection(this.collectionName);
       const result = await stateCollection.insertOne(record);
+      delete record['_id'];
       
       // Upsert latest state into stateTicker collection
       const stateTickerCollection = db.collection('stateTicker');
