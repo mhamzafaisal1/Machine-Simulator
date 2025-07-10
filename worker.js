@@ -1,7 +1,7 @@
 // worker.js
 const { MongoClient } = require('mongodb');
 const config = require('./config');
-const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations } = require('./utils');
+const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations, getOperatorName } = require('./utils');
 
 async function runSimulator() {
   console.log(`[${new Date().toISOString()}] Starting machine simulator...`);
@@ -44,12 +44,21 @@ async function runSimulator() {
         const result = await stateCollection.insertOne(record);
         const activeStations = getActiveStations();
         
+        // Upsert latest state into stateTicker collection
+        const stateTickerCollection = db.collection('stateTicker');
+        const upsertResult = await stateTickerCollection.updateOne(
+          { "machine.serial": record.machine.serial },
+          { $set: record },
+          { upsert: true }
+        );
+        
         console.log(`[${new Date().toISOString()}] ✅ Inserted ${stateType} state`);
         console.log(`   📝 Document ID: ${result.insertedId}`);
         console.log(`   🕐 Timestamp: ${record.timestamp.toISOString()}`);
         console.log(`   🔧 Machine: ${record.machine.name} (${record.machine.serial}) - Type: ${config.machine.type}`);
         console.log(`   📊 Status: ${record.status.name} (Code: ${record.status.code})`);
         console.log(`   🏭 Active Stations: ${activeStations.join(', ')} (Lanes: ${config.machine.lanes})`);
+        console.log(`   📈 StateTicker: ${upsertResult.upsertedCount > 0 ? 'Created' : 'Updated'} latest state`);
         
         // Get updated collection count
         const updatedStats = await db.command({ collStats: config.collectionName });
@@ -78,8 +87,11 @@ async function runSimulator() {
     
       const timeout = setTimeout(async () => {
         try {
-          // Get item ID for this station (for now, same as first item)
-          const itemId = Object.values(runningState.program.items)[0].id;
+          // Get operator name from MongoDB
+          const operatorName = await getOperatorName(db, operator.id);
+          
+          // Check for misfeed (1 in 400 chance)
+          const isMisfeed = Math.floor(Math.random() * 400) <= 1;
     
           const countRecord = {
             timestamp: new Date(),
@@ -87,23 +99,35 @@ async function runSimulator() {
             program: runningState.program,
             operator: {
               id: operator.id,
-              name: "None Entered" // We'll need to map operator ID to name
-            },
-            item: {
-              id: itemId,
-              name: "None Entered",
-              standard: 666
+              name: operatorName,
+              station: station
             },
             station: station,
             lane: station // Lane matches station
           };
+          
+          // Add item data only for regular counts (not misfeeds)
+          if (!isMisfeed) {
+            const itemId = Object.values(runningState.program.items)[0].id;
+            countRecord.item = {
+              id: itemId,
+              name: "None Entered",
+              standard: 666
+            };
+            console.log(`[${new Date().toISOString()}] ✅ Count inserted for station ${station}`);
+            console.log(`   📦 Item ID: ${itemId}`);
+            console.log(`   👤 Operator: ${operatorName} (${operator.id})`);
+            console.log(`   🔧 Machine: ${runningState.machine.name}`);
+            console.log(`   🏭 Station: ${station}, Lane: ${station}`);
+          } else {
+            countRecord.misfeed = true;
+            console.log(`[${new Date().toISOString()}] ⚠️ MISFEED recorded at station ${station}`);
+            console.log(`   👤 Operator: ${operatorName} (${operator.id})`);
+            console.log(`   🔧 Machine: ${runningState.machine.name}`);
+            console.log(`   🏭 Station: ${station}, Lane: ${station}`);
+          }
     
           await collection.insertOne(countRecord);
-          console.log(`[${new Date().toISOString()}] ✅ Count inserted for station ${station}`);
-          console.log(`   📦 Item ID: ${itemId}`);
-          console.log(`   👤 Operator: ${operator.name || 'Unknown'} (${operator.id})`);
-          console.log(`   🔧 Machine: ${runningState.machine.name}`);
-          console.log(`   🏭 Station: ${station}, Lane: ${station}`);
     
           const updatedStats = await db.command({ collStats: config.countCollectionName });
           console.log(`   📈 Total documents in count collection: ${updatedStats.count}`);

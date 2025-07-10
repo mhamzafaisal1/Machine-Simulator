@@ -10,6 +10,44 @@ function getRandomOperators() {
   return shuffled.slice(0, 8);
 }
 
+// New function to get operator name from MongoDB
+async function getOperatorName(db, operatorId) {
+  try {
+    const operatorsCollection = db.collection('operator');
+    const operator = await operatorsCollection.findOne(
+      { code: operatorId },
+      { projection: { name: 1 } }
+    );
+    return operator ? operator.name : "Unknown";
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] ❌ Error querying operator name for ID ${operatorId}:`, error.message);
+    return "Unknown";
+  }
+}
+
+// New function to get operator names for multiple operators
+async function getOperatorNames(db, operators) {
+  const operatorsWithNames = [];
+  
+  for (const operator of operators) {
+    if (operator.id > 0 && operator.id < 900000) { // Real operator (not dummy or -1)
+      const name = await getOperatorName(db, operator.id);
+      operatorsWithNames.push({
+        ...operator,
+        name: name
+      });
+    } else {
+      // For dummy operators or -1, keep as is
+      operatorsWithNames.push({
+        ...operator,
+        name: "None"
+      });
+    }
+  }
+  
+  return operatorsWithNames;
+}
+
 function getActiveStations(machineConfig = null) {
   // Use provided machine config or fall back to default config
   const targetConfig = machineConfig || config.machine;
@@ -127,6 +165,8 @@ module.exports = {
   getRandomOperators,
   getStationOperators,
   getRandomItemPerStation,
-  getActiveStations
+  getActiveStations,
+  getOperatorName,
+  getOperatorNames
 };
   

@@ -1,6 +1,6 @@
 // simulation-worker.js - Individual machine simulation worker
 const { MongoClient } = require('mongodb');
-const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations } = require('./utils');
+const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations, getOperatorName } = require('./utils');
 
 class MachineSimulator {
   constructor(machineConfig) {
@@ -93,10 +93,19 @@ class MachineSimulator {
       const stateCollection = db.collection(this.collectionName);
       const result = await stateCollection.insertOne(record);
       
+      // Upsert latest state into stateTicker collection
+      const stateTickerCollection = db.collection('stateTicker');
+      const upsertResult = await stateTickerCollection.updateOne(
+        { "machine.serial": record.machine.serial },
+        { $set: record },
+        { upsert: true }
+      );
+      
       console.log(`[${this.getTimestamp()}] ✅ Inserted ${stateType} state for ${this.machineConfig.name}`);
       console.log(`   📝 Document ID: ${result.insertedId}`);
       console.log(`   🔧 Machine: ${record.machine.name} (${record.machine.serial})`);
       console.log(`   📊 Status: ${record.status.name} (Code: ${record.status.code})`);
+      console.log(`   📈 StateTicker: ${upsertResult.upsertedCount > 0 ? 'Created' : 'Updated'} latest state`);
       
       // Start count generation if machine is running
       if (stateType === "Running") {
@@ -122,29 +131,42 @@ class MachineSimulator {
         const db = this.client.db(this.dbName);
         const collection = db.collection(this.countCollectionName);
         
-        // Get item ID for this station (for now, same as first item)
-        const itemId = Object.values(runningState.program.items)[0].id;
-  
+        // Get operator name from MongoDB
+        const operatorName = await getOperatorName(db, operator.id);
+        
+        // Check for misfeed (1 in 400 chance)
+        const isMisfeed = Math.floor(Math.random() * 400) <= 1;
+
         const countRecord = {
           timestamp: new Date(),
           machine: runningState.machine,
           program: runningState.program,
           operator: {
             id: operator.id,
-            name: "None Entered"
-          },
-          item: {
-            id: itemId,
-            name: "None Entered",
-            standard: 666
+            name: operatorName,
+            station: station
           },
           station: station,
           lane: station
         };
+        
+        // Add item data only for regular counts (not misfeeds)
+        if (!isMisfeed) {
+          const itemId = Object.values(runningState.program.items)[0].id;
+          countRecord.item = {
+            id: itemId,
+            name: "None Entered",
+            standard: 666
+          };
+          console.log(`[${this.getTimestamp()}] ✅ Count inserted at station ${station} - ${this.machineConfig.name}`);
+          console.log(`   📦 Item ID: ${itemId}, Operator: ${operatorName} (${operator.id})`);
+        } else {
+          countRecord.misfeed = true;
+          console.log(`[${this.getTimestamp()}] ⚠️ MISFEED recorded at station ${station} - ${this.machineConfig.name}`);
+          console.log(`   👤 Operator: ${operatorName} (${operator.id})`);
+        }
   
         await collection.insertOne(countRecord);
-        console.log(`[${this.getTimestamp()}] ✅ Count inserted for station ${station} - ${this.machineConfig.name}`);
-        console.log(`   📦 Item ID: ${itemId}, Operator: ${operator.id}`);
   
         // Continue count generation for this station if still running
         if (this.countTimeouts.has(station)) {
