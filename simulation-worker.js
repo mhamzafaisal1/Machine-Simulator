@@ -1,6 +1,11 @@
-// simulation-worker.js - Individual machine simulation worker
 const { MongoClient } = require('mongodb');
-const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations, getOperatorName } = require('./utils');
+const {
+  getRandomDelay,
+  buildStateRecord,
+  getStationOperators,
+  getActiveStations,
+  getOperatorName
+} = require('./utils');
 
 class MachineSimulator {
   constructor(machineConfig) {
@@ -9,8 +14,7 @@ class MachineSimulator {
     this.client = null;
     this.countTimeouts = new Map();
     this.currentRunningState = null;
-    
-    // MongoDB configuration
+    this.validFaults = [];
     this.mongoUri = 'mongodb://localhost:27017/chitrac';
     this.dbName = 'chitrac';
     this.collectionName = 'state';
@@ -18,124 +22,124 @@ class MachineSimulator {
   }
 
   async start() {
-    if (this.isRunning) {
-      console.log(`[${this.getTimestamp()}] ⚠️  Simulator for ${this.machineConfig.name} is already running`);
-      return;
-    }
-
-    console.log(`[${this.getTimestamp()}] 🚀 Starting simulator for ${this.machineConfig.name} (${this.machineConfig.type})`);
-    console.log(`[${this.getTimestamp()}] 📍 Serial: ${this.machineConfig.serial}, IP: ${this.machineConfig.ipAddress}`);
-    console.log(`[${this.getTimestamp()}] 🏭 Active Stations: ${this.machineConfig.stations.join(', ')}`);
+    if (this.isRunning) return;
 
     try {
+      console.log(`[${this.getTimestamp()}] 🚀 Starting simulator for ${this.machineConfig.name}`);
       await this.connectToMongoDB();
+      await this.loadFaults();
       this.isRunning = true;
       await this.simulationLoop();
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Failed to start simulator for ${this.machineConfig.name}:`, error.message);
+      console.error(`[${this.getTimestamp()}] ❌ Failed to start simulator:`, error.message);
       throw error;
     }
-  }
-
-  async stop() {
-    if (!this.isRunning) {
-      console.log(`[${this.getTimestamp()}] ⚠️  Simulator for ${this.machineConfig.name} is not running`);
-      return;
-    }
-
-    console.log(`[${this.getTimestamp()}] 🛑 Stopping simulator for ${this.machineConfig.name}...`);
-    
-    // Clear all count timeouts
-    this.countTimeouts.forEach((timeout, station) => {
-      clearTimeout(timeout);
-    });
-    this.countTimeouts.clear();
-    
-    this.isRunning = false;
-    
-    if (this.client) {
-      await this.client.close();
-      console.log(`[${this.getTimestamp()}] ✅ Disconnected from MongoDB for ${this.machineConfig.name}`);
-    }
-  }
-
-  getStatus() {
-    return {
-      machineName: this.machineConfig.name,
-      machineSerial: this.machineConfig.serial,
-      machineType: this.machineConfig.type,
-      isRunning: this.isRunning,
-      activeStations: this.machineConfig.stations,
-      activeCounts: this.countTimeouts.size
-    };
   }
 
   async connectToMongoDB() {
     this.client = new MongoClient(this.mongoUri);
     await this.client.connect();
-    console.log(`[${this.getTimestamp()}] ✅ Connected to MongoDB for ${this.machineConfig.name}`);
+    console.log(`[${this.getTimestamp()}] ✅ Connected to MongoDB`);
   }
 
-  async writeState(stateType) {
-    try {
-      // Clear all count timeouts if machine is stopping
-      if (stateType === "Timeout" || stateType === "Fault") {
-        this.countTimeouts.forEach((timeout, station) => {
-          clearTimeout(timeout);
-          console.log(`[${this.getTimestamp()}] 🛑 Stopped count generation for station ${station} (${stateType} state) - ${this.machineConfig.name}`);
-        });
-        this.countTimeouts.clear();
-        this.currentRunningState = null;
-      }
-      
-      const record = buildStateRecord(stateType, this.machineConfig);
-      const db = this.client.db(this.dbName);
-      const stateCollection = db.collection(this.collectionName);
-      const result = await stateCollection.insertOne(record);
-      delete record['_id'];
-      
-      // Upsert latest state into stateTicker collection
-      const stateTickerCollection = db.collection('stateTicker');
-      const upsertResult = await stateTickerCollection.updateOne(
-        { "machine.serial": record.machine.serial },
-        { $set: record },
-        { upsert: true }
-      );
-      
-      console.log(`[${this.getTimestamp()}] ✅ Inserted ${stateType} state for ${this.machineConfig.name}`);
-      console.log(`   📝 Document ID: ${result.insertedId}`);
-      console.log(`   🔧 Machine: ${record.machine.name} (${record.machine.serial})`);
-      console.log(`   📊 Status: ${record.status.name} (Code: ${record.status.code})`);
-      console.log(`   📈 StateTicker: ${upsertResult.upsertedCount > 0 ? 'Created' : 'Updated'} latest state`);
-      
-      // Start count generation if machine is running
-      if (stateType === "Running") {
-        this.currentRunningState = record;
-        // Start count generation for each active station
-        record.operators.forEach(operator => {
-          if (operator.id > 0 && operator.id < 900000) { // Real operator (not dummy or -1)
-            this.simulateStationCounts(record, operator.station, operator);
-          }
-        });
-      }
-      
-    } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error inserting ${stateType} state for ${this.machineConfig.name}:`, error.message);
+  async loadFaults() {
+    const db = this.client.db(this.dbName);
+    const faultCollection = db.collection('fault');
+    this.validFaults = await faultCollection.find().sort({ code: 1 }).toArray();
+    console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.validFaults.length} fault types`);
+
+    if (this.validFaults.length < 58) {
+      console.warn(`[${this.getTimestamp()}] ⚠️ Only ${this.validFaults.length} fault codes found (expected 58)`);
     }
   }
 
+  getRandomFault() {
+    const faultCount = this.validFaults.length;
+    if (faultCount === 0) {
+      console.warn(`[${this.getTimestamp()}] ⚠️ No fault codes loaded. Using fallback.`);
+      return { code: 17, name: "Fault" };
+    }
+
+    const index = Math.floor(Math.random() * faultCount);
+    const fault = this.validFaults[index];
+
+    if (!fault) {
+      console.warn(`[${this.getTimestamp()}] ⚠️ Fault at index ${index} is undefined. Using fallback.`);
+      return { code: 17, name: "Fault" };
+    }
+
+    console.log(`[${this.getTimestamp()}] 🔧 Injecting fault: ${fault.code} - ${fault.name}`);
+    return fault;
+  }
+
+  async writeState(stateType) {
+    if (stateType === "Timeout" || stateType === "Fault") {
+      this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
+      this.countTimeouts.clear();
+      this.currentRunningState = null;
+    }
+
+    const record = buildStateRecord(stateType, this.machineConfig);
+
+    if (stateType === "Fault") {
+      const fault = this.getRandomFault();
+      record.status.code = fault.code;
+      record.status.name = fault.name;
+    }
+
+    const db = this.client.db(this.dbName);
+    await db.collection(this.collectionName).insertOne(record);
+    delete record._id;
+
+    await db.collection('stateTicker').updateOne(
+      { "machine.serial": record.machine.serial },
+      { $set: record },
+      { upsert: true }
+    );
+
+    if (stateType === "Running") {
+      this.currentRunningState = record;
+      record.operators.forEach((op) => {
+        if (op.id > 0 && op.id < 900000) {
+          this.simulateStationCounts(record, op.station, op);
+        }
+      });
+    }
+  }
+
+  async simulationLoop() {
+    while (this.isRunning) {
+      await this.writeState("Timeout");
+      await this.delay(getRandomDelay(1, 5));
+      if (!this.isRunning) break;
+
+      await this.writeState("Running");
+      await this.delay(getRandomDelay(2, 90));
+      if (!this.isRunning) break;
+
+      const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
+      await this.writeState(nextState);
+      await this.delay(getRandomDelay(1, 5));
+    }
+  }
+
+  async stop() {
+    if (!this.isRunning) return;
+    this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.countTimeouts.clear();
+    this.isRunning = false;
+    await this.client?.close();
+    console.log(`[${this.getTimestamp()}] 🛑 Simulator stopped`);
+  }
+
   simulateStationCounts(runningState, station, operator) {
-    const delayMs = (Math.floor(Math.random() * (15 - 4 + 1)) + 4) * 1000; // 4-15 sec
-  
+    const delayMs = (Math.floor(Math.random() * (15 - 4 + 1)) + 4) * 1000;
+
     const timeout = setTimeout(async () => {
       try {
         const db = this.client.db(this.dbName);
         const collection = db.collection(this.countCollectionName);
-        
-        // Get operator name from MongoDB
         const operatorName = await getOperatorName(db, operator.id);
-        
-        // Check for misfeed (1 in 400 chance)
         const isMisfeed = Math.floor(Math.random() * 400) <= 1;
 
         const countRecord = {
@@ -150,67 +154,35 @@ class MachineSimulator {
           station: station,
           lane: station
         };
-        
-        // Add item data only for regular counts (not misfeeds)
+
         if (!isMisfeed) {
-          const itemId = Object.values(runningState.program.items)[0].id;
+          const items = Object.values(runningState.program.items || {});
+          const itemId = items.length > 0 ? items[0].id : -1;
+
           countRecord.item = {
             id: itemId,
             name: "None Entered",
             standard: 666
           };
-          console.log(`[${this.getTimestamp()}] ✅ Count inserted at station ${station} - ${this.machineConfig.name}`);
-          console.log(`   📦 Item ID: ${itemId}, Operator: ${operatorName} (${operator.id})`);
         } else {
           countRecord.misfeed = true;
-          console.log(`[${this.getTimestamp()}] ⚠️ MISFEED recorded at station ${station} - ${this.machineConfig.name}`);
-          console.log(`   👤 Operator: ${operatorName} (${operator.id})`);
         }
-  
+
         await collection.insertOne(countRecord);
-  
-        // Continue count generation for this station if still running
+
         if (this.countTimeouts.has(station)) {
           this.simulateStationCounts(runningState, station, operator);
         }
-      } catch (error) {
-        console.error(`[${this.getTimestamp()}] ❌ Error inserting count for station ${station} - ${this.machineConfig.name}:`, error.message);
+      } catch (err) {
+        console.error(`❌ Count error at station ${station}:`, err.message);
       }
     }, delayMs);
-  
-    // Store timeout reference for this station
+
     this.countTimeouts.set(station, timeout);
-    console.log(`[${this.getTimestamp()}] ⏰ Next count for station ${station} in ${delayMs / 1000} seconds - ${this.machineConfig.name}`);
-  }
-
-  async simulationLoop() {
-    console.log(`[${this.getTimestamp()}] 🚀 Starting simulation loop for ${this.machineConfig.name}...`);
-    
-    while (this.isRunning) {
-      await this.writeState("Timeout");
-      const timeoutDelay = getRandomDelay(1, 5);
-      console.log(`[${this.getTimestamp()}] ⏰ Waiting ${timeoutDelay/1000/60} minutes before Running state - ${this.machineConfig.name}`);
-      await this.delay(timeoutDelay);
-
-      if (!this.isRunning) break;
-
-      await this.writeState("Running");
-      const runningDelay = getRandomDelay(2, 90);
-      console.log(`[${this.getTimestamp()}] ⏰ Waiting ${runningDelay/1000/60} minutes before next state - ${this.machineConfig.name}`);
-      await this.delay(runningDelay);
-
-      if (!this.isRunning) break;
-
-      const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
-      await this.writeState(nextState);
-      const finalDelay = getRandomDelay(1, 5);
-      console.log(`[${this.getTimestamp()}] ⏰ Waiting ${finalDelay/1000/60} minutes before next cycle - ${this.machineConfig.name}`);
-      await this.delay(finalDelay);
-    }
   }
 
   delay(ms) {
-    return new Promise(res => setTimeout(res, ms));
+    return new Promise((res) => setTimeout(res, ms));
   }
 
   getTimestamp() {
@@ -218,48 +190,30 @@ class MachineSimulator {
   }
 }
 
-// Export for use as module
 module.exports = MachineSimulator;
 
-// If this file is run directly, get machine config from environment or use test machine
 if (require.main === module) {
   const { getActiveMachines } = require('./fillmore-machines');
-  
+
   async function startWorker() {
-    let machineConfig;
-    
-    // Check if machine config is provided via environment variable (from process manager)
-    if (process.env.MACHINE_CONFIG) {
-      try {
-        machineConfig = JSON.parse(process.env.MACHINE_CONFIG);
-        console.log(`[${new Date().toISOString()}] 📦 Using machine config from environment: ${machineConfig.name}`);
-      } catch (error) {
-        console.error(`[${new Date().toISOString()}] ❌ Failed to parse MACHINE_CONFIG environment variable:`, error.message);
-        process.exit(1);
-      }
-    } else {
-      // Fallback to first active machine for testing
-      machineConfig = getActiveMachines()[0];
-      console.log(`[${new Date().toISOString()}] 🧪 Using test machine config: ${machineConfig.name}`);
-    }
-    
-    const simulator = new MachineSimulator(machineConfig);
-    
-    // Handle graceful shutdown
+    const config = process.env.MACHINE_CONFIG
+      ? JSON.parse(process.env.MACHINE_CONFIG)
+      : getActiveMachines()[0];
+
+    const simulator = new MachineSimulator(config);
+
     process.on('SIGINT', async () => {
-      console.log(`\n[${new Date().toISOString()}] 🛑 Received SIGINT, stopping simulator...`);
       await simulator.stop();
       process.exit(0);
     });
-    
+
     process.on('SIGTERM', async () => {
-      console.log(`\n[${new Date().toISOString()}] 🛑 Received SIGTERM, stopping simulator...`);
       await simulator.stop();
       process.exit(0);
     });
-    
+
     await simulator.start();
   }
-  
+
   startWorker().catch(console.error);
-} 
+}

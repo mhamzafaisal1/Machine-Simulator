@@ -15,11 +15,21 @@
     "help": "node machine-simulator.js --help",
     "fillmore-help": "node fillmore-simulator.js --help"
   },
-  "keywords": ["simulator", "machine", "manufacturing", "mongodb", "fillmore", "chitrac"],
+  "keywords": [
+    "simulator",
+    "machine",
+    "manufacturing",
+    "mongodb",
+    "fillmore",
+    "chitrac"
+  ],
   "author": "",
   "license": "ISC",
   "description": "Multi-station machine simulator for ChiTrac system - supports individual machines and full Fillmore facility simulation",
   "dependencies": {
     "mongodb": "^6.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0"
   }
 }
