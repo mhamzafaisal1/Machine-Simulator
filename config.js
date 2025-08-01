@@ -1,4 +1,4 @@
-// config.js - Auto-generated from CLI arguments
+// config.js - Auto-generated from CLI arguments with environment variables
 module.exports = {
     // MongoDB connection settings (centralized)
     mongoUri: 'mongodb://localhost:27017/chitrac',
