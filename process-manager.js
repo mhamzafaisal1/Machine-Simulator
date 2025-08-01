@@ -19,10 +19,10 @@ class SimulationManager {
     
     try {
       // Validate all machine configurations
-      validateAllMachines();
+      await validateAllMachines();
       
       // Get active machines
-      const activeMachines = getActiveMachines();
+      const activeMachines = await getActiveMachines();
       console.log(`📋 Found ${activeMachines.length} active machines to simulate`);
       
       // Spawn worker for each active machine

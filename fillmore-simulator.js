@@ -16,10 +16,10 @@ class FillmoreSimulator {
     try {
       // Validate configurations
       console.log('\n🔍 Validating machine configurations...');
-      validateAllMachines();
+      await validateAllMachines();
       
       // Show machine summary
-      const activeMachines = getActiveMachines();
+      const activeMachines = await getActiveMachines();
       console.log('\n📋 Machine Summary:');
       console.log(`   Total Machines: ${activeMachines.length}`);
       
@@ -30,6 +30,12 @@ class FillmoreSimulator {
       
       Object.entries(machineTypes).forEach(([type, count]) => {
         console.log(`   ${type}: ${count} machine(s)`);
+      });
+      
+      // Show lanes information
+      console.log('\n🏭 Machine Lanes Configuration:');
+      activeMachines.forEach(machine => {
+        console.log(`   ${machine.name}: ${machine.lanes} lane(s) - Stations: [${machine.stations.join(', ')}]`);
       });
       
       console.log('\n🚀 Starting all machines...');
@@ -95,17 +101,17 @@ Options:
   --status             Show current status (if running)
 
 Description:
-  This simulator starts all 10 Fillmore machines simultaneously:
-  - 5 SPF machines (single station each)
-  - 2 LPL machines (3 stations each)
-  - 2 Blanket machines (2 stations each)
-  - 1 SPL machine (4 stations)
+  This simulator starts all machines from the MongoDB 'machine' collection:
+  - Machines are dynamically loaded from the database
+  - Each machine can have 1-4 lanes based on the 'lanes' field
+  - Each lane gets its own operator assignment
+  - Machines are filtered by the 'active' field
 
   Each machine runs in its own process and generates realistic
   manufacturing data including state changes and production counts.
 
 Examples:
-  node fillmore-simulator.js              # Start all machines
+  node fillmore-simulator.js              # Start all active machines
   node fillmore-simulator.js --help       # Show help
 
 Data Generated:
