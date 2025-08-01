@@ -1,10 +1,15 @@
 // config.js - Auto-generated from CLI arguments
 module.exports = {
-    // MongoDB connection matching chitrac-api structure
+    // MongoDB connection settings (centralized)
     mongoUri: 'mongodb://localhost:27017/chitrac',
     dbName: 'chitrac',
     collectionName: 'state',
     countCollectionName: 'count',
+    machineCollectionName: 'machine',
+    operatorCollectionName: 'operator',
+    faultCollectionName: 'fault',
+    stateTickerCollectionName: 'stateTicker',
+    simulatedOperatorsTickerCollectionName: 'simulated-operators-ticker',
   
     // Machine data from CLI arguments
     machine: {

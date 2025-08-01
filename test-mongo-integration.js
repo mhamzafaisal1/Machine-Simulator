@@ -2,10 +2,12 @@
 
 // test-mongo-integration.js - Test script for MongoDB machine data integration
 const { getMachines, getActiveMachines, validateAllMachines, clearCache } = require('./fillmore-machines');
+const config = require('./config');
 
 async function testMongoIntegration() {
   console.log('🧪 Testing MongoDB Machine Data Integration');
   console.log('===========================================');
+  console.log(`🔗 Using MongoDB: ${config.mongoUri}/${config.dbName}`);
   
   try {
     // Test 1: Fetch all machines

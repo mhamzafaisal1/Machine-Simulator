@@ -2,21 +2,22 @@
 
 // test-operator-uniqueness.js - Test script for operator uniqueness safeguards
 const { MongoClient } = require('mongodb');
+const config = require('./config');
 
 async function testOperatorUniqueness() {
   console.log('🧪 Testing Operator Uniqueness Safeguards');
   console.log('==========================================');
+  console.log(`🔗 Using MongoDB: ${config.mongoUri}/${config.dbName}`);
   
-  const mongoUri = 'mongodb://localhost:27017/chitrac';
-  const client = new MongoClient(mongoUri);
+  const client = new MongoClient(config.mongoUri);
   
   try {
     await client.connect();
     console.log('🔗 Connected to MongoDB');
     
-    const db = client.db('chitrac');
-    const tickerCollection = db.collection('simulated-operators-ticker');
-    const operatorsCollection = db.collection('operator');
+    const db = client.db(config.dbName);
+    const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
+    const operatorsCollection = db.collection(config.operatorCollectionName);
     
     // Test 1: Check current operator assignments
     console.log('\n📋 Test 1: Current Operator Assignments');

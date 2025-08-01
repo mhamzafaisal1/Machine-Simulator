@@ -6,6 +6,7 @@ const {
   getActiveStations,
   getOperatorName
 } = require('./utils');
+const config = require('./config');
 
 class MachineSimulator {
   constructor(machineConfig) {
@@ -15,10 +16,10 @@ class MachineSimulator {
     this.countTimeouts = new Map();
     this.currentRunningState = null;
     this.validFaults = [];
-    this.mongoUri = 'mongodb://localhost:27017/chitrac';
-    this.dbName = 'chitrac';
-    this.collectionName = 'state';
-    this.countCollectionName = 'count';
+    this.mongoUri = config.mongoUri;
+    this.dbName = config.dbName;
+    this.collectionName = config.collectionName;
+    this.countCollectionName = config.countCollectionName;
   }
 
   async start() {
@@ -44,7 +45,7 @@ class MachineSimulator {
 
   async loadFaults() {
     const db = this.client.db(this.dbName);
-    const faultCollection = db.collection('fault');
+    const faultCollection = db.collection(config.faultCollectionName);
     this.validFaults = await faultCollection.find().sort({ code: 1 }).toArray();
     console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.validFaults.length} fault types`);
 
@@ -76,8 +77,8 @@ class MachineSimulator {
     const db = this.client.db(this.dbName);
     const activeStations = getActiveStations(this.machineConfig);
     const machineSerial = this.machineConfig.serial;
-    const tickerCollection = db.collection('simulated-operators-ticker');
-    const operatorsCollection = db.collection('operator');
+    const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
+    const operatorsCollection = db.collection(config.operatorCollectionName);
     const assignedOperators = [];
 
     // Get all operator assignments currently in ticker
@@ -217,7 +218,7 @@ class MachineSimulator {
   async cleanupOperatorAssignments() {
     const db = this.client.db(this.dbName);
     const machineSerial = this.machineConfig.serial;
-    const tickerCollection = db.collection('simulated-operators-ticker');
+    const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
     
     try {
       // Remove all operator assignments for this machine
@@ -291,7 +292,7 @@ class MachineSimulator {
     await db.collection(this.collectionName).insertOne(record);
     delete record._id;
 
-    await db.collection('stateTicker').updateOne(
+    await db.collection(config.stateTickerCollectionName).updateOne(
       { "machine.serial": record.machine.serial },
       { $set: record },
       { upsert: true }

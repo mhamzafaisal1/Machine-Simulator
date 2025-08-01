@@ -1,11 +1,12 @@
 // fillmore-machines.js - Configuration for all Fillmore machines from MongoDB
 const { MongoClient } = require('mongodb');
 const simulatedMachineSchema = require('./schemas/simulatedMachineSchema');
+const config = require('./config');
 
-// MongoDB connection settings
-const mongoUri = 'mongodb://localhost:27017/chitrac';
-const dbName = 'chitrac';
-const machineCollectionName = 'machine';
+// MongoDB connection settings (from centralized config)
+const mongoUri = config.mongoUri;
+const dbName = config.dbName;
+const machineCollectionName = config.machineCollectionName;
 
 // Cache for machine data
 let machineCache = null;

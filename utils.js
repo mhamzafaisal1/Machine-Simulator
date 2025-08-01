@@ -8,7 +8,7 @@ function getRandomDelay(minMinutes, maxMinutes) {
 // Updated to use MongoDB instead of hardcoded config
 async function getRandomOperators(db) {
   try {
-    const operatorsCollection = db.collection('operator');
+    const operatorsCollection = db.collection(config.operatorCollectionName);
     const operators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
     
     // Filter out operators starting with 9
@@ -26,7 +26,7 @@ async function getRandomOperators(db) {
 // New function to get operator name from MongoDB
 async function getOperatorName(db, operatorId) {
   try {
-    const operatorsCollection = db.collection('operator');
+    const operatorsCollection = db.collection(config.operatorCollectionName);
     const operator = await operatorsCollection.findOne(
       { code: operatorId },
       { projection: { name: 1 } }
@@ -85,7 +85,7 @@ function getActiveStations(machineConfig = null) {
 // Updated to use MongoDB instead of hardcoded config
 async function getStationOperators(db, machineConfig = null) {
   try {
-    const operatorsCollection = db.collection('operator');
+    const operatorsCollection = db.collection(config.operatorCollectionName);
     const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
     
     // Filter out operators starting with 9
