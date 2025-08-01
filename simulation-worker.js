@@ -85,6 +85,10 @@ class MachineSimulator {
     // Get all operators from MongoDB, projecting out _id
     const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
 
+    // Filter out operators starting with 9
+    const filteredOperators = allOperators.filter(op => !op.code.toString().startsWith('9'));
+    console.log(`[${this.getTimestamp()}] 📊 Filtered operators: ${allOperators.length} total, ${filteredOperators.length} available (excluded ${allOperators.length - filteredOperators.length} starting with 9)`);
+
     // Create a map of currently assigned operators for quick lookup
     const currentlyAssignedOperators = new Map();
     allTicker.forEach(assignment => {
@@ -104,7 +108,7 @@ class MachineSimulator {
       
       if (lastAssignment && Math.random() < 0.85) {
         // 85%: try to reuse last operator
-        const lastOperator = allOperators.find(op => op.code === lastAssignment.operatorId);
+        const lastOperator = filteredOperators.find(op => op.code === lastAssignment.operatorId);
         
         // Check if last operator is still available (not assigned to other machines/lanes)
         const currentAssignment = currentlyAssignedOperators.get(lastAssignment.operatorId);
@@ -121,7 +125,7 @@ class MachineSimulator {
         const allAssignedOperatorIds = Array.from(currentlyAssignedOperators.keys());
         
         // Filter out operators that are currently assigned anywhere
-        const availableOperators = allOperators.filter(
+        const availableOperators = filteredOperators.filter(
           op => !allAssignedOperatorIds.includes(op.code)
         );
         
@@ -136,15 +140,15 @@ class MachineSimulator {
           candidateOperator = availableOperators[Math.floor(Math.random() * availableOperators.length)];
         } else if (lastAssignment) {
           // Emergency fallback: reuse last operator even if assigned elsewhere
-          candidateOperator = allOperators.find(op => op.code === lastAssignment.operatorId);
+          candidateOperator = filteredOperators.find(op => op.code === lastAssignment.operatorId);
           useLast = true;
           console.log(`[${this.getTimestamp()}] ⚠️ Emergency fallback: reusing operator ${lastAssignment.operatorId} despite conflicts`);
         }
       }
       
       // Final fallback: use any operator if still no candidate
-      if (!candidateOperator && allOperators.length > 0) {
-        candidateOperator = allOperators[station % allOperators.length];
+      if (!candidateOperator && filteredOperators.length > 0) {
+        candidateOperator = filteredOperators[station % filteredOperators.length];
         console.log(`[${this.getTimestamp()}] ⚠️ Final fallback: using operator ${candidateOperator.code} for station ${station}`);
       }
       

@@ -10,7 +10,11 @@ async function getRandomOperators(db) {
   try {
     const operatorsCollection = db.collection('operator');
     const operators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
-    const shuffled = operators.sort(() => 0.5 - Math.random());
+    
+    // Filter out operators starting with 9
+    const filteredOperators = operators.filter(op => !op.code.toString().startsWith('9'));
+    
+    const shuffled = filteredOperators.sort(() => 0.5 - Math.random());
     return shuffled.slice(0, 8);
   } catch (error) {
     console.error(`[${new Date().toISOString()}] ❌ Error fetching operators from MongoDB:`, error.message);
@@ -83,7 +87,11 @@ async function getStationOperators(db, machineConfig = null) {
   try {
     const operatorsCollection = db.collection('operator');
     const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
-    const shuffled = allOperators.sort(() => 0.5 - Math.random());
+    
+    // Filter out operators starting with 9
+    const filteredOperators = allOperators.filter(op => !op.code.toString().startsWith('9'));
+    
+    const shuffled = filteredOperators.sort(() => 0.5 - Math.random());
     
     const operators = [];
     const activeStations = getActiveStations(machineConfig);
