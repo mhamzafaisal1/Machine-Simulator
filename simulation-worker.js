@@ -1,3 +1,5 @@
+// simulation-worker.js - Main file for the generating workers.
+
 const { MongoClient } = require('mongodb');
 const {
   getRandomDelay,
