@@ -228,11 +228,11 @@ class MachineSimulator {
     
     // For inactive stations, assign dummy or -1 as before
     // For inactive stations, assign -1 (no operator)
-    for (let station = 1; station <= machineLanes; station++) {
-      if (!activeStations.includes(station)) {
-        assignedOperators.push({ id: -1, station });
-      }
-    }
+    // for (let station = 1; station <= machineLanes; station++) {
+    //   if (!activeStations.includes(station)) {
+    //     assignedOperators.push({ id: -1, station });
+    //   }
+    // }
     
     // Sort by station
     assignedOperators.sort((a, b) => a.station - b.station);
