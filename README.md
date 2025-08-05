@@ -1,24 +1,40 @@
 # Machine Simulator for ChiTrac System
 
-A comprehensive multi-station machine simulator for the ChiTrac manufacturing system. Supports both individual machine simulation and full facility simulation (Fillmore).
+A comprehensive multi-station machine simulator for the ChiTrac manufacturing system. Supports both individual machine simulation and full facility simulation (Fillmore) with dynamic machine configuration from MongoDB.
 
 ## Features
 
-- **Multi-Station Support**: Simulates machines with 1-4 stations
+- **Dynamic Machine Configuration**: Pulls machine data from MongoDB 'machine' collection
+- **Multi-Lane Support**: Each machine can have 1-4 lanes based on database configuration
 - **Multiple Machine Types**: SPF, LPL, Blanket, and SPL machines
 - **Realistic Data Generation**: State changes and production counts
 - **Process Management**: Spawn multiple machines as child processes
 - **Database Integration**: MongoDB storage with real-time updates
 - **Configurable**: Easy machine configuration and validation
+- **Operator Management**: Unique operator assignment per lane with persistence
 
-## Machine Types
+## Machine Configuration
 
-| Type | Lanes | Active Stations | Description |
-|------|-------|-----------------|-------------|
-| SPF | 1 | [1] | Single station processing |
-| LPL | 3 | [1,2,3] | Three station processing |
-| Blanket | 2 | [1,3] | Two station processing |
-| SPL | 4 | [1,2,3,4] | Four station processing |
+Machines are configured in the MongoDB 'machine' collection with the following format:
+
+```javascript
+{
+  "serial": 67798,
+  "name": "LPL1", 
+  "active": true,
+  "ipAddress": "192.168.0.7",
+  "lanes": 3
+}
+```
+
+### Lane Configuration
+
+- **1 Lane**: Single station (station 1)
+- **2 Lanes**: Two stations (stations 1, 2)  
+- **3 Lanes**: Three stations (stations 1, 2, 3)
+- **4 Lanes**: Four stations (stations 1, 2, 3, 4)
+
+Each lane gets its own operator assignment and generates independent production counts.
 
 ## Installation
 
@@ -32,6 +48,16 @@ mongod
 
 ## Usage
 
+### Fillmore Facility Simulation (All Active Machines)
+
+```bash
+# Start all active machines from MongoDB
+node fillmore-simulator.js
+
+# Or use npm script
+npm start
+```
+
 ### Single Machine Simulation
 
 ```bash
@@ -44,51 +70,51 @@ node machine-simulator.js --serial=67798 --type=LPL
 node machine-simulator.js --serial=67801 --type=Blanket
 ```
 
-### Fillmore Facility Simulation (All 10 Machines)
+### Testing MongoDB Integration
 
 ```bash
-# Start all Fillmore machines simultaneously
-node fillmore-simulator.js
+# Test MongoDB machine data integration
+npm run test-mongo
 
-# Or use npm script
-npm start
+# Validate machine configurations
+npm run validate
 ```
 
 ### NPM Scripts
 
 ```bash
-npm start              # Start all Fillmore machines
+npm start              # Start all active machines from MongoDB
 npm run single         # Run single machine simulator
+npm run test-mongo     # Test MongoDB integration
 npm run validate       # Validate machine configurations
 npm run test           # Test configuration
 npm run help           # Show single machine help
 npm run fillmore-help  # Show Fillmore simulator help
 ```
 
-## Fillmore Machines
-
-The simulator includes all 10 Fillmore manufacturing machines:
-
-- **SPF Machines (5)**: SPF2, SPF3, SPF4, SPF5, SPF6
-- **LPL Machines (2)**: LPL1, LPL2
-- **Blanket Machines (2)**: Blanket1, Blanket2
-- **SPL Machines (1)**: SPL1
-
 ## Data Generated
 
 ### State Records
 - Machine state changes (Timeout → Running → Fault)
-- Operator assignments per station
+- Operator assignments per lane/station
 - Program information and item details
 
 ### Count Records
-- Production counts for each active station
+- Production counts for each active lane
 - Operator and item correlation
 - Station and lane information
 
+### Operator Management
+- Unique operator assignment per lane
+- 85/15% operator reuse probability
+- Cross-machine operator uniqueness
+- Persistent operator tracking in `simulated-operators-ticker` collection
+
 ### Database Collections
+- `chitrac.machine`: Machine configurations
 - `chitrac.state-simulated`: Machine state records
 - `chitrac.count-simulated`: Production count records
+- `chitrac.simulated-operators-ticker`: Operator assignments
 
 ## Architecture
 
@@ -97,7 +123,7 @@ The simulator includes all 10 Fillmore manufacturing machines:
 machine-simulator/
 ├── schemas/
 │   └── simulatedMachineSchema.js    # Machine configuration schema
-├── fillmore-machines.js             # All 10 machine configurations
+├── fillmore-machines.js             # MongoDB machine data integration
 ├── simulation-worker.js             # Individual machine simulator
 ├── process-manager.js               # Multi-process manager
 ├── fillmore-simulator.js            # Main orchestrator
@@ -105,6 +131,7 @@ machine-simulator/
 ├── worker.js                        # Legacy single machine worker
 ├── utils.js                         # Utility functions
 ├── config.js                        # Configuration (auto-generated)
+├── test-mongo-integration.js        # MongoDB integration tests
 └── package.json                     # Project configuration
 ```
 
@@ -119,28 +146,29 @@ machine-simulator/
 ### Machine Configuration Schema
 ```javascript
 {
-  serial: 67800,           // Machine serial number
-  name: "SPL1",            // Machine name
+  serial: 67798,           // Machine serial number
+  name: "LPL1",            // Machine name
   active: true,            // Whether to simulate
-  ipAddress: "192.168.0.11", // Machine IP
-  lanes: 4,                // Number of lanes
-  stations: [1,2,3,4],     // Active stations
-  type: "SPL",             // Machine type
+  ipAddress: "192.168.0.7", // Machine IP
+  lanes: 3,                // Number of lanes (1-4)
+  stations: [1,2,3],       // Active stations (auto-generated from lanes)
+  type: "LPL",             // Machine type (auto-detected from name)
   groups: []               // Machine groups
 }
 ```
 
 ### Adding New Machines
-1. Add machine configuration to `fillmore-machines.js`
-2. Validate configuration: `npm run validate`
-3. Restart simulator: `npm start`
+1. Add machine configuration to MongoDB `machine` collection
+2. Set `active: true` to enable simulation
+3. Set `lanes` field to determine number of stations
+4. Restart simulator: `npm start`
 
 ## Monitoring
 
 ### Real-time Status
 The simulator provides real-time status updates:
 - Machine uptime
-- Active stations
+- Active lanes/stations
 - Count generation status
 - Process health
 
@@ -149,6 +177,7 @@ The simulator provides real-time status updates:
 - State change notifications
 - Count generation events
 - Error reporting
+- Operator assignment tracking
 
 ## Troubleshooting
 
@@ -158,6 +187,12 @@ The simulator provides real-time status updates:
 ```bash
 # Ensure MongoDB is running
 mongod
+```
+
+**No Machines Found**
+```bash
+# Check if machines exist in database
+npm run test-mongo
 ```
 
 **Port Already in Use**
@@ -187,6 +222,9 @@ pkill -f "fillmore-simulator"
 
 ### Testing
 ```bash
+# Test MongoDB integration
+npm run test-mongo
+
 # Test configuration
 npm run test
 
@@ -199,7 +237,7 @@ node simulation-worker.js
 
 ### Adding New Features
 1. Update schema in `schemas/simulatedMachineSchema.js`
-2. Modify machine configurations in `fillmore-machines.js`
+2. Modify machine configurations in MongoDB
 3. Update simulation logic in `simulation-worker.js`
 4. Test with validation and single machine first
 

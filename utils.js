@@ -5,15 +5,28 @@ function getRandomDelay(minMinutes, maxMinutes) {
   return (Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) + minMinutes) * 60 * 1000;
 }
 
-function getRandomOperators() {
-  const shuffled = config.operatorPool.sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, 8);
+// Updated to use MongoDB instead of hardcoded config
+async function getRandomOperators(db) {
+  try {
+    const operatorsCollection = db.collection(config.operatorCollectionName);
+    const operators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
+    
+    // Filter out operators starting with 9
+    const filteredOperators = operators.filter(op => !op.code.toString().startsWith('9'));
+    
+    const shuffled = filteredOperators.sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, 8);
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] ❌ Error fetching operators from MongoDB:`, error.message);
+    // Fallback to empty array if MongoDB fails
+    return [];
+  }
 }
 
 // New function to get operator name from MongoDB
 async function getOperatorName(db, operatorId) {
   try {
-    const operatorsCollection = db.collection('operator');
+    const operatorsCollection = db.collection(config.operatorCollectionName);
     const operator = await operatorsCollection.findOne(
       { code: operatorId },
       { projection: { name: 1 } }
@@ -60,55 +73,65 @@ function getActiveStations(machineConfig = null) {
   // Otherwise, determine active stations based on lanes configuration
   const lanes = targetConfig.lanes;
   
-  switch (lanes) {
-    case 1:
-      return [1]; // SPF machines
-    case 2:
-      return [1, 3]; // Blanket machines (stations 1 and 3)
-    case 3:
-      return [1, 2, 3]; // LPL machines
-    case 4:
-      return [1, 2, 3, 4]; // SPL machines
-    default:
-      return [1]; // Default to single station
+  // Each lane gets its own station (1, 2, 3, 4 based on number of lanes)
+  const activeStations = [];
+  for (let i = 1; i <= lanes; i++) {
+    activeStations.push(i);
   }
+  
+  return activeStations;
 }
 
-function getStationOperators(machineConfig = null) {
-  const shuffled = config.operatorPool.sort(() => 0.5 - Math.random());
-  const operators = [];
-  const activeStations = getActiveStations(machineConfig);
-  const targetConfig = machineConfig || config.machine;
-  
-  // Create operators array for all 4 stations (1-4)
-  for (let station = 1; station <= 4; station++) {
-    if (activeStations.includes(station)) {
-      // Active station - assign real operator
-      const operatorIndex = (station - 1) * config.operatorsPerStation;
-      const operator = shuffled[operatorIndex];
-      operators.push({
-        id: operator.code,
-        station: station
-      });
-    } else {
-      // Inactive station - assign dummy or -1
-      if (station === 2 && !activeStations.includes(2)) {
-        // Station 2 gets dummy operator (9 + machine serial) for Blanket machines
+// Updated to use MongoDB instead of hardcoded config
+async function getStationOperators(db, machineConfig = null) {
+  try {
+    const operatorsCollection = db.collection(config.operatorCollectionName);
+    const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
+    
+    // Filter out operators starting with 9
+    const filteredOperators = allOperators.filter(op => !op.code.toString().startsWith('9'));
+    
+    const shuffled = filteredOperators.sort(() => 0.5 - Math.random());
+    
+    const operators = [];
+    const activeStations = getActiveStations(machineConfig);
+    const targetConfig = machineConfig || config.machine;
+    
+    // Create operators array for all 4 stations (1-4)
+    for (let station = 1; station <= 4; station++) {
+      if (activeStations.includes(station)) {
+        // Active station - assign real operator
+        const operatorIndex = (station - 1) % shuffled.length; // Use modulo to avoid index out of bounds
+        const operator = shuffled[operatorIndex];
         operators.push({
-          id: parseInt('9' + targetConfig.serial.toString()),
+          id: operator.code,
           station: station
         });
       } else {
-        // Other inactive stations get -1
+        // Inactive station - assign -1 (no operator)
         operators.push({
           id: -1,
           station: station
         });
       }
     }
+    
+    return operators;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] ❌ Error fetching operators from MongoDB:`, error.message);
+    // Fallback to dummy operators if MongoDB fails
+    const operators = [];
+    const activeStations = getActiveStations(machineConfig);
+    
+    for (let station = 1; station <= 4; station++) {
+      operators.push({
+        id: -1,
+        station: station
+      });
+    }
+    
+    return operators;
   }
-  
-  return operators;
 }
 
 function getRandomItemId() {
@@ -125,7 +148,8 @@ function getRandomItemPerStation() {
   return items;
 }
 
-function buildStateRecord(stateType, machineConfig = null) {
+// Updated to use MongoDB for operators
+async function buildStateRecord(db, stateType, machineConfig = null) {
   const statusMap = {
     Timeout: { code: 0, name: "Timeout", softrolColor: "Grey" },
     Running: { code: 1, name: "Run", softrolColor: "Green" },
@@ -134,7 +158,7 @@ function buildStateRecord(stateType, machineConfig = null) {
 
   const status = stateType === "Fault" ? statusMap.Fault : statusMap[stateType];
   const items = getRandomItemPerStation();
-  const operators = getStationOperators(machineConfig);
+  const operators = await getStationOperators(db, machineConfig);
   const activeStations = getActiveStations(machineConfig);
   const targetConfig = machineConfig || config.machine;
 
