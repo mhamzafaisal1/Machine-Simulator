@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// fillmore-simulator.js - Main orchestrator for all Fillmore machines
+// fillmore-simulator.js - Main orchestrator for all Fillmore machines-Starting point for the simulation of fillmore machines 
 const SimulationManager = require('./process-manager');
 const { validateAllMachines, getActiveMachines } = require('./fillmore-machines');
 

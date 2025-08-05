@@ -8,6 +8,7 @@ module.exports = {
     machineCollectionName: 'machine',
     operatorCollectionName: 'operator',
     faultCollectionName: 'fault',
+    itemCollectionName: 'item',
     stateTickerCollectionName: 'stateTicker',
     simulatedOperatorsTickerCollectionName: 'simulated-operators-ticker',
   

@@ -1,10 +1,16 @@
+// simulation-worker.js - Main file for the generating workers.
+
 const { MongoClient } = require('mongodb');
 const {
   getRandomDelay,
   buildStateRecord,
   getStationOperators,
   getActiveStations,
-  getOperatorName
+  getOperatorName,
+  loadItems,
+  selectRandomItem,
+  shouldChangeItem,
+  calculateItemTiming
 } = require('./utils');
 const config = require('./config');
 
@@ -16,6 +22,8 @@ class MachineSimulator {
     this.countTimeouts = new Map();
     this.currentRunningState = null;
     this.validFaults = [];
+    this.items = []; // Array to store loaded items
+    this.currentItem = null; // Currently selected item
     this.mongoUri = config.mongoUri;
     this.dbName = config.dbName;
     this.collectionName = config.collectionName;
@@ -29,6 +37,8 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] 🚀 Starting simulator for ${this.machineConfig.name}`);
       await this.connectToMongoDB();
       await this.loadFaults();
+      await this.loadItems();
+      this.selectInitialItem();
       this.isRunning = true;
       await this.simulationLoop();
     } catch (error) {
@@ -51,6 +61,23 @@ class MachineSimulator {
 
     if (this.validFaults.length < 58) {
       console.warn(`[${this.getTimestamp()}] ⚠️ Only ${this.validFaults.length} fault codes found (expected 58)`);
+    }
+  }
+
+  async loadItems() {
+    const db = this.client.db(this.dbName);
+    this.items = await loadItems(db);
+  }
+
+  selectInitialItem() {
+    this.currentItem = selectRandomItem(this.items);
+  }
+
+  selectNextItem() {
+    if (shouldChangeItem()) {
+      this.currentItem = selectRandomItem(this.items);
+    } else {
+      console.log(`[${this.getTimestamp()}] 🔄 Keeping current item: ${this.currentItem.name}`);
     }
   }
 
@@ -254,7 +281,15 @@ class MachineSimulator {
         Fault:   { code: Math.floor(Math.random() * 99) + 2, name: "Fault", softrolColor: "Red" }
       };
       const status = statusMap[stateType];
-      const items = require('./utils').getRandomItemPerStation();
+      
+      // Use current item for all stations
+      const items = {};
+      for (let i = 0; i < 8; i++) {
+        items[i.toString()] = { 
+          id: this.currentItem.number, 
+          count: 0 
+        };
+      }
       const targetConfig = this.machineConfig;
       
       record = {
@@ -320,6 +355,10 @@ class MachineSimulator {
 
       const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
       await this.writeState(nextState);
+      
+      // Select next item when machine stops (before delay)
+      this.selectNextItem();
+      
       await this.delay(getRandomDelay(1, 5));
     }
   }
@@ -334,7 +373,9 @@ class MachineSimulator {
   }
 
   simulateStationCounts(runningState, station, operator) {
-    const delayMs = (Math.floor(Math.random() * (15 - 4 + 1)) + 4) * 1000;
+    // Calculate timing based on current item
+    const timing = calculateItemTiming(this.currentItem);
+    const delayMs = (Math.floor(Math.random() * (timing.highRange - timing.lowRange + 1)) + timing.lowRange) * 1000;
 
     const timeout = setTimeout(async () => {
       try {
@@ -357,13 +398,11 @@ class MachineSimulator {
         };
 
         if (!isMisfeed) {
-          const items = Object.values(runningState.program.items || {});
-          const itemId = items.length > 0 ? items[0].id : -1;
-
+          // Include current item information
           countRecord.item = {
-            id: itemId,
-            name: "None Entered",
-            standard: 666
+            id: this.currentItem.number,
+            name: this.currentItem.name,
+            standard: this.currentItem.standard
           };
         } else {
           countRecord.misfeed = true;

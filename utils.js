@@ -148,6 +148,82 @@ function getRandomItemPerStation() {
   return items;
 }
 
+// New function to load items from MongoDB item collection
+async function loadItems(db) {
+  try {
+    const itemCollection = db.collection(config.itemCollectionName);
+    const items = await itemCollection.find({ active: true }).toArray();
+    
+    // Validate items
+    const validItems = items.filter(item => {
+      // Check required fields
+      if (!item.number || !item.name || item.standard === undefined) {
+        console.warn(`[${new Date().toISOString()}] ⚠️ Skipping item with missing required fields:`, item);
+        return false;
+      }
+      
+      // Validate standard field
+      if (typeof item.standard !== 'number' || !isFinite(item.standard) || item.standard <= 0) {
+        console.warn(`[${new Date().toISOString()}] ⚠️ Skipping item with invalid standard value:`, item);
+        return false;
+      }
+      
+      return true;
+    });
+    
+    if (validItems.length === 0) {
+      throw new Error('❌ No valid active items found in database');
+    }
+    
+    console.log(`[${new Date().toISOString()}] ✅ Loaded ${validItems.length} valid items from database`);
+    return validItems;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] ❌ Error loading items from MongoDB:`, error.message);
+    throw error;
+  }
+}
+
+// New function to select a random item from the loaded items
+function selectRandomItem(items) {
+  if (!items || items.length === 0) {
+    throw new Error('❌ No items available for selection');
+  }
+  
+  const randomIndex = Math.floor(Math.random() * items.length);
+  const selectedItem = items[randomIndex];
+  
+  console.log(`[${new Date().toISOString()}] 🎯 Selected item: ${selectedItem.name} (ID: ${selectedItem.number}, Standard: ${selectedItem.standard})`);
+  return selectedItem;
+}
+
+// New function to determine if item should change based on 85/15 rule
+function shouldChangeItem() {
+  const randomValue = Math.random() * 100;
+  const shouldChange = randomValue >= 85; // 15% chance to change item
+  
+  console.log(`[${new Date().toISOString()}] 🎲 Item change roll: ${randomValue.toFixed(2)} - ${shouldChange ? 'Changing item' : 'Keeping same item'}`);
+  return shouldChange;
+}
+
+// New function to calculate timing based on item standard
+function calculateItemTiming(item) {
+  if (!item || !item.standard) {
+    throw new Error('❌ Invalid item for timing calculation');
+  }
+  
+  const secondsPerPiece = 3600 / item.standard;
+  const lowRange = secondsPerPiece * 0.65;
+  const highRange = secondsPerPiece * 1.65;
+  
+  console.log(`[${new Date().toISOString()}] ⏱️ Item timing - Standard: ${item.standard} pph, Seconds per piece: ${secondsPerPiece.toFixed(2)}, Range: ${lowRange.toFixed(2)}-${highRange.toFixed(2)}s`);
+  
+  return {
+    secondsPerPiece,
+    lowRange,
+    highRange
+  };
+}
+
 // Updated to use MongoDB for operators
 async function buildStateRecord(db, stateType, machineConfig = null) {
   const statusMap = {
@@ -191,6 +267,10 @@ module.exports = {
   getRandomItemPerStation,
   getActiveStations,
   getOperatorName,
-  getOperatorNames
+  getOperatorNames,
+  loadItems,
+  selectRandomItem,
+  shouldChangeItem,
+  calculateItemTiming
 };
   
