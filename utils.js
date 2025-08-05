@@ -138,20 +138,17 @@ async function getStationOperators(db, machineConfig = null) {
   }
 }
 
+
+
 // DEPRECATED: This function is no longer used since items are loaded from MongoDB
 // Keeping for backward compatibility but should not be used
-function getRandomItemId() {
-  console.warn(`[${new Date().toISOString()}] ⚠️ getRandomItemId() is deprecated. Use loadItems() from MongoDB instead.`);
-  return 26; // Fallback to a default item ID
-}
-
 function getRandomItemPerStation(machineConfig = null) {
-  // For now, same item across all stations (can be extended for SPF flexibility)
-  const itemId = getRandomItemId();
+  console.warn(`[${new Date().toISOString()}] ⚠️ getRandomItemPerStation() is deprecated. Items are now loaded from MongoDB.`);
+  // Return a fallback structure for backward compatibility
   const items = {};
   const maxStations = (machineConfig || config.machine).lanes || 1;
   for (let i = 0; i < maxStations; i++) {
-    items[i.toString()] = { id: itemId, count: 0 };
+    items[i.toString()] = { id: 26, count: 0 }; // Fallback to default item ID
   }
   return items;
 }
@@ -241,7 +238,9 @@ async function buildStateRecord(db, stateType, machineConfig = null) {
   };
 
   let status = stateType === "Fault" ? statusMap.Fault : statusMap[stateType];
-  
+
+  const targetConfig = machineConfig || config.machine; // ✅ Moved here to fix the bug
+
   // For Fault state, get actual fault from database
   if (stateType === "Fault") {
     try {
@@ -261,10 +260,15 @@ async function buildStateRecord(db, stateType, machineConfig = null) {
       status = { code: 17, name: "Fault", softrolColor: "Red" };
     }
   }
-  const items = getRandomItemPerStation(machineConfig);
+
+  const items = {};
+  const maxStations = targetConfig.lanes || 1;
+  for (let i = 0; i < maxStations; i++) {
+    items[i.toString()] = { id: 26, count: 0 }; // Default fallback item
+  }
+
   const operators = await getStationOperators(db, machineConfig);
   const activeStations = getActiveStations(machineConfig);
-  const targetConfig = machineConfig || config.machine;
 
   return {
     timestamp: new Date(),
@@ -279,13 +283,14 @@ async function buildStateRecord(db, stateType, machineConfig = null) {
       batchNumber: Math.floor(Math.random() * 21) + 20,
       accountNumber: 0,
       speed: 0,
-      stations: targetConfig.lanes, // Use lanes count as stations
+      stations: targetConfig.lanes,
       items
     },
-    operators: operators,
+    operators,
     status
   };
 }
+
 
 module.exports = {
   getRandomDelay,

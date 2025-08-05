@@ -279,6 +279,8 @@ class MachineSimulator {
       };
       const status = statusMap[stateType];
       
+      const targetConfig = this.machineConfig;
+      
       // Use current item for all stations
       const items = {};
       const maxStations = targetConfig.lanes || 1;
@@ -288,7 +290,6 @@ class MachineSimulator {
           count: 0 
         };
       }
-      const targetConfig = this.machineConfig;
       
       record = {
         timestamp: new Date(),
@@ -334,7 +335,7 @@ class MachineSimulator {
     if (stateType === "Running") {
       this.currentRunningState = record;
       record.operators.forEach((op) => {
-        if (op.id > 0 && op.id < 900000) {
+        if (require('./utils').isValidOperatorId(op.id)) {
           this.simulateStationCounts(record, op.station, op);
         }
       });
