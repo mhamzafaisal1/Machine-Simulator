@@ -97,8 +97,10 @@ async function getStationOperators(db, machineConfig = null) {
     const activeStations = getActiveStations(machineConfig);
     const targetConfig = machineConfig || config.machine;
     
-    // Create operators array for all 4 stations (1-4)
-    for (let station = 1; station <= 4; station++) {
+    // Create operators array for all stations based on machine lanes
+    const maxStations = targetConfig.lanes || 1; // Use lanes from machine config, default to 1
+    
+    for (let station = 1; station <= maxStations; station++) {
       if (activeStations.includes(station)) {
         // Active station - assign real operator
         const operatorIndex = (station - 1) % shuffled.length; // Use modulo to avoid index out of bounds
@@ -107,6 +109,7 @@ async function getStationOperators(db, machineConfig = null) {
           id: operator.code,
           station: station
         });
+        console.log(`[${new Date().toISOString()}] 👤 Assigned operator ${operator.code} to lane ${station} (station ${station})`);
       } else {
         // Inactive station - assign -1 (no operator)
         operators.push({
@@ -122,8 +125,9 @@ async function getStationOperators(db, machineConfig = null) {
     // Fallback to dummy operators if MongoDB fails
     const operators = [];
     const activeStations = getActiveStations(machineConfig);
+    const maxStations = (machineConfig || config.machine).lanes || 1;
     
-    for (let station = 1; station <= 4; station++) {
+    for (let station = 1; station <= maxStations; station++) {
       operators.push({
         id: -1,
         station: station
@@ -134,15 +138,19 @@ async function getStationOperators(db, machineConfig = null) {
   }
 }
 
+// DEPRECATED: This function is no longer used since items are loaded from MongoDB
+// Keeping for backward compatibility but should not be used
 function getRandomItemId() {
-  return config.itemIds[Math.floor(Math.random() * config.itemIds.length)];
+  console.warn(`[${new Date().toISOString()}] ⚠️ getRandomItemId() is deprecated. Use loadItems() from MongoDB instead.`);
+  return 26; // Fallback to a default item ID
 }
 
-function getRandomItemPerStation() {
+function getRandomItemPerStation(machineConfig = null) {
   // For now, same item across all stations (can be extended for SPF flexibility)
   const itemId = getRandomItemId();
   const items = {};
-  for (let i = 0; i < 8; i++) {
+  const maxStations = (machineConfig || config.machine).lanes || 1;
+  for (let i = 0; i < maxStations; i++) {
     items[i.toString()] = { id: itemId, count: 0 };
   }
   return items;
@@ -229,11 +237,31 @@ async function buildStateRecord(db, stateType, machineConfig = null) {
   const statusMap = {
     Timeout: { code: 0, name: "Timeout", softrolColor: "Grey" },
     Running: { code: 1, name: "Run", softrolColor: "Green" },
-    Fault:   { code: Math.floor(Math.random() * 99) + 2, name: "Fault", softrolColor: "Red" }
+    Fault:   { code: 0, name: "Fault", softrolColor: "Red" } // Will be overridden with actual fault code
   };
 
-  const status = stateType === "Fault" ? statusMap.Fault : statusMap[stateType];
-  const items = getRandomItemPerStation();
+  let status = stateType === "Fault" ? statusMap.Fault : statusMap[stateType];
+  
+  // For Fault state, get actual fault from database
+  if (stateType === "Fault") {
+    try {
+      const faultCollection = db.collection(config.faultCollectionName);
+      const faults = await faultCollection.find({}).sort({ code: 1 }).toArray();
+      if (faults.length > 0) {
+        const randomFault = faults[Math.floor(Math.random() * faults.length)];
+        status = {
+          code: randomFault.code,
+          name: randomFault.name || randomFault.description || "Fault",
+          softrolColor: "Red"
+        };
+      }
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] ❌ Error fetching fault from database:`, error.message);
+      // Fallback to default fault
+      status = { code: 17, name: "Fault", softrolColor: "Red" };
+    }
+  }
+  const items = getRandomItemPerStation(machineConfig);
   const operators = await getStationOperators(db, machineConfig);
   const activeStations = getActiveStations(machineConfig);
   const targetConfig = machineConfig || config.machine;

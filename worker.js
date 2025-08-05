@@ -96,14 +96,11 @@ async function runSimulator() {
           assignedOperators.push({ id: -1, station });
         }
       }
-      // For inactive stations, assign dummy or -1 as before
-      for (let station = 1; station <= 4; station++) {
+      // For inactive stations, assign -1 (no operator)
+      const maxStations = config.machine.lanes || 1;
+      for (let station = 1; station <= maxStations; station++) {
         if (!activeStations.includes(station)) {
-          if (station === 2 && !activeStations.includes(2)) {
-            assignedOperators.push({ id: parseInt('9' + machineSerial.toString()), station });
-          } else {
-            assignedOperators.push({ id: -1, station });
-          }
+          assignedOperators.push({ id: -1, station });
         }
       }
       // Sort by station

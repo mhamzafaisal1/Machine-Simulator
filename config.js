@@ -22,9 +22,7 @@ module.exports = {
       type: 'LPL' // Machine type from CLI
     },
   
-    // Item IDs matching chitrac-api defaults (using 'number' field)
-    itemIds: [26, 30, 33], // HospitalSheet, Large Thermal Blanket, Mixed Towels
-  
     // Note: Operators are now fetched from MongoDB 'operator' collection
-    // No longer using hardcoded operator pool
+    // Items are now fetched from MongoDB 'item' collection
+    // No longer using hardcoded operator pool or item IDs
   };

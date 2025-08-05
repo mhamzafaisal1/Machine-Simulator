@@ -227,13 +227,10 @@ class MachineSimulator {
     }
     
     // For inactive stations, assign dummy or -1 as before
-    for (let station = 1; station <= 4; station++) {
+    // For inactive stations, assign -1 (no operator)
+    for (let station = 1; station <= machineLanes; station++) {
       if (!activeStations.includes(station)) {
-        if (station === 2 && !activeStations.includes(2)) {
-          assignedOperators.push({ id: parseInt('9' + machineSerial.toString()), station });
-        } else {
-          assignedOperators.push({ id: -1, station });
-        }
+        assignedOperators.push({ id: -1, station });
       }
     }
     
@@ -278,13 +275,14 @@ class MachineSimulator {
       const statusMap = {
         Timeout: { code: 0, name: "Timeout", softrolColor: "Grey" },
         Running: { code: 1, name: "Run", softrolColor: "Green" },
-        Fault:   { code: Math.floor(Math.random() * 99) + 2, name: "Fault", softrolColor: "Red" }
+        Fault:   { code: 0, name: "Fault", softrolColor: "Red" } // Will be overridden with actual fault code
       };
       const status = statusMap[stateType];
       
       // Use current item for all stations
       const items = {};
-      for (let i = 0; i < 8; i++) {
+      const maxStations = targetConfig.lanes || 1;
+      for (let i = 0; i < maxStations; i++) {
         items[i.toString()] = { 
           id: this.currentItem.number, 
           count: 0 
