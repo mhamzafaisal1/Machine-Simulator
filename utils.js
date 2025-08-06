@@ -43,7 +43,7 @@ async function getOperatorNames(db, operators) {
   const operatorsWithNames = [];
   
   for (const operator of operators) {
-    if (operator.id > 0 && operator.id < 900000) { // Real operator (not dummy or -1)
+    if (isValidOperatorId(operator.id)) { // Real operator (not dummy or -1)
       const name = await getOperatorName(db, operator.id);
       operatorsWithNames.push({
         ...operator,
@@ -229,6 +229,11 @@ function calculateItemTiming(item) {
   };
 }
 
+// Helper function to validate operator IDs
+function isValidOperatorId(id) {
+  return typeof id === 'number' && id > 0 && id.toString()[0] !== '9';
+}
+
 // Updated to use MongoDB for operators
 async function buildStateRecord(db, stateType, machineConfig = null) {
   const statusMap = {
@@ -304,6 +309,7 @@ module.exports = {
   loadItems,
   selectRandomItem,
   shouldChangeItem,
-  calculateItemTiming
+  calculateItemTiming,
+  isValidOperatorId
 };
   

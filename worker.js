@@ -342,7 +342,7 @@ async function runSimulator() {
         if (stateType === "Running") {
           currentRunningState = record;
           record.operators.forEach(operator => {
-            if (operator.id > 0 && operator.id < 900000) {
+            if (require('./utils').isValidOperatorId(operator.id)) {
               simulateStationCounts(db, record, operator.station, operator);
             }
           });
