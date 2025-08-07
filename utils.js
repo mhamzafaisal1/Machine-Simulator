@@ -12,7 +12,7 @@ async function getRandomOperators(db) {
     const operators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
     
     // Filter out operators starting with 9
-    const filteredOperators = operators.filter(op => !op.code.toString().startsWith('9'));
+    const filteredOperators = operators.filter(op => op.code.toString().startsWith('1'));
     
     const shuffled = filteredOperators.sort(() => 0.5 - Math.random());
     return shuffled.slice(0, 8);
@@ -89,7 +89,7 @@ async function getStationOperators(db, machineConfig = null) {
     const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
     
     // Filter out operators starting with 9
-    const filteredOperators = allOperators.filter(op => !op.code.toString().startsWith('9'));
+    const filteredOperators = allOperators.filter(op => op.code.toString().startsWith('1'));
     
     const shuffled = filteredOperators.sort(() => 0.5 - Math.random());
     
