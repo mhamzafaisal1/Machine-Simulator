@@ -26,8 +26,7 @@ testMachines.forEach(testMachine => {
   const operators = getStationOperators();
   console.log(`   Operators:`);
   operators.forEach(op => {
-    const status = op.id > 0 && op.id < 900000 ? '✅ Active' : 
-                   op.id.toString().startsWith('9') ? '🤖 Dummy' : '❌ Inactive';
+    const status = op.id.toString().startsWith('1') ? '✅ Active' : '❌ Inactive';
     console.log(`     Station ${op.station}: ${op.id} ${status}`);
   });
   

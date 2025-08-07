@@ -114,7 +114,7 @@ class MachineSimulator {
     const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
 
     // Filter out operators starting with 9
-    const filteredOperators = allOperators.filter(op => !op.code.toString().startsWith('9'));
+    const filteredOperators = allOperators.filter(op => op.code.toString().startsWith('1'));
     console.log(`[${this.getTimestamp()}] 📊 Filtered operators: ${allOperators.length} total, ${filteredOperators.length} available (excluded ${allOperators.length - filteredOperators.length} starting with 9)`);
 
     // Create a map of currently assigned operators for quick lookup
