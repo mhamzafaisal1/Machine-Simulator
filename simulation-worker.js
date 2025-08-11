@@ -425,7 +425,7 @@ class MachineSimulator {
 
         await db.collection(config.stateTickerCollectionName).updateOne(
           { "machine.serial": countRecord.machine.serial },
-          { $set: {timestamp: $currentDate } }
+          { $set: {timestamp: new Date() } }
         );
 
         if (this.countTimeouts.has(station)) {
