@@ -314,35 +314,10 @@ async function runSimulator() {
         const result = await stateCollection.insertOne(record);
         delete record['_id'];
 
-        // Write to time-based state collections
-        const timestamp = record.timestamp;
-        const { getDailyPeriod, getWeeklyPeriod, getMonthlyPeriod } = require('./utils');
-        
-        // Add time period fields for time-based collections
-        const recordWithPeriods = {
-          ...record,
-          dailyPeriod: getDailyPeriod(timestamp),
-          weeklyPeriod: getWeeklyPeriod(timestamp),
-          monthlyPeriod: getMonthlyPeriod(timestamp)
-        };
-
-        // Write to daily collection
-        await db.collection(config.stateMachineDailyCollectionName).insertOne({
-          ...recordWithPeriods,
-          _id: undefined
-        });
-
-        // Write to weekly collection
-        await db.collection(config.stateMachineWeeklyCollectionName).insertOne({
-          ...recordWithPeriods,
-          _id: undefined
-        });
-
-        // Write to monthly collection
-        await db.collection(config.stateMachineMonthlyCollectionName).insertOne({
-          ...recordWithPeriods,
-          _id: undefined
-        });
+        // Write to additional state collections (simple data copying)
+        await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
+        await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
+        await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
 
         // Upsert into stateTicker (remove _id)
         const tickerRecord = JSON.parse(JSON.stringify(record));
@@ -432,35 +407,10 @@ async function runSimulator() {
     
           await collection.insertOne(countRecord);
 
-          // Write to time-based count collections
-          const timestamp = countRecord.timestamp;
-          const { getDailyPeriod, getWeeklyPeriod, getMonthlyPeriod } = require('./utils');
-          
-          // Add time period fields for time-based collections
-          const countRecordWithPeriods = {
-            ...countRecord,
-            dailyPeriod: getDailyPeriod(timestamp),
-            weeklyPeriod: getWeeklyPeriod(timestamp),
-            monthlyPeriod: getMonthlyPeriod(timestamp)
-          };
-
-          // Write to daily count collection
-          await db.collection(config.countDailyCollectionName).insertOne({
-            ...countRecordWithPeriods,
-            _id: undefined
-          });
-
-          // Write to weekly count collection
-          await db.collection(config.countWeeklyCollectionName).insertOne({
-            ...countRecordWithPeriods,
-            _id: undefined
-          });
-
-          // Write to monthly count collection
-          await db.collection(config.countMonthlyCollectionName).insertOne({
-            ...countRecordWithPeriods,
-            _id: undefined
-          });
+                  // Write to additional count collections (simple data copying)
+        await db.collection(config.countDailyCollectionName).insertOne(countRecord);
+        await db.collection(config.countWeeklyCollectionName).insertOne(countRecord);
+        await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
 
           const updatedStats = await db.command({ collStats: config.countCollectionName });
           console.log(`   📈 Total documents in count collection: ${updatedStats.count}`);

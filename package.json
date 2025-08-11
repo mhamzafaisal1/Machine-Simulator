@@ -14,7 +14,7 @@
     "test-mongo": "node test-mongo-integration.js",
     "test-operators": "node test-operator-uniqueness.js",
     "test-collections": "node test-new-collections.js",
-    "demo-collections": "node demo-new-collections.js",
+            "demo-collections": "node demo-simple-collections.js",
     "verify": "node verify-implementation.js",
     "validate": "node -e \"require('./fillmore-machines').validateAllMachines()\"",
     "help": "node machine-simulator.js --help",

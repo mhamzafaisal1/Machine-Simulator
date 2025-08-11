@@ -5,24 +5,6 @@ function getRandomDelay(minMinutes, maxMinutes) {
   return (Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) + minMinutes) * 60 * 1000;
 }
 
-// Time period utility functions for new collections
-function getDailyPeriod(timestamp) {
-  const date = new Date(timestamp);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function getWeeklyPeriod(timestamp) {
-  const date = new Date(timestamp);
-  const dayOfWeek = date.getDay();
-  const diff = date.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Adjust for Sunday
-  return new Date(date.getFullYear(), date.getMonth(), diff);
-}
-
-function getMonthlyPeriod(timestamp) {
-  const date = new Date(timestamp);
-  return new Date(date.getFullYear(), date.getMonth(), 1);
-}
-
 // Updated to use MongoDB instead of hardcoded config
 async function getRandomOperators(db) {
   try {
@@ -328,9 +310,6 @@ module.exports = {
   selectRandomItem,
   shouldChangeItem,
   calculateItemTiming,
-  isValidOperatorId,
-  getDailyPeriod,
-  getWeeklyPeriod,
-  getMonthlyPeriod
+  isValidOperatorId
 };
   

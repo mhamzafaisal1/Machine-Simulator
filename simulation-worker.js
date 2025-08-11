@@ -328,35 +328,13 @@ class MachineSimulator {
     await db.collection(this.collectionName).insertOne(record);
     delete record._id;
 
-    // Write to time-based state collections
-    const timestamp = record.timestamp;
-    const { getDailyPeriod, getWeeklyPeriod, getMonthlyPeriod } = require('./utils');
-    
-    // Add time period fields for time-based collections
-    const recordWithPeriods = {
-      ...record,
-      dailyPeriod: getDailyPeriod(timestamp),
-      weeklyPeriod: getWeeklyPeriod(timestamp),
-      monthlyPeriod: getMonthlyPeriod(timestamp)
-    };
-
-    // Write to daily collection
-    await db.collection(config.stateMachineDailyCollectionName).insertOne({
-      ...recordWithPeriods,
-      _id: undefined
-    });
-
-    // Write to weekly collection
-    await db.collection(config.stateMachineWeeklyCollectionName).insertOne({
-      ...recordWithPeriods,
-      _id: undefined
-    });
-
-    // Write to monthly collection
-    await db.collection(config.stateMachineMonthlyCollectionName).insertOne({
-      ...recordWithPeriods,
-      _id: undefined
-    });
+    // Write to additional state collections (simple data copying)
+    delete record._id;
+    await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
+    delete record._id;
+    await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
+    delete record._id;
+    await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
 
     // Update state ticker
     await db.collection(config.stateTickerCollectionName).updateOne(
@@ -443,35 +421,10 @@ class MachineSimulator {
         // Write to main count collection
         await collection.insertOne(countRecord);
 
-        // Write to time-based count collections
-        const timestamp = countRecord.timestamp;
-        const { getDailyPeriod, getWeeklyPeriod, getMonthlyPeriod } = require('./utils');
-        
-        // Add time period fields for time-based collections
-        const countRecordWithPeriods = {
-          ...countRecord,
-          dailyPeriod: getDailyPeriod(timestamp),
-          weeklyPeriod: getWeeklyPeriod(timestamp),
-          monthlyPeriod: getMonthlyPeriod(timestamp)
-        };
-
-        // Write to daily count collection
-        await db.collection(config.countDailyCollectionName).insertOne({
-          ...countRecordWithPeriods,
-          _id: undefined
-        });
-
-        // Write to weekly count collection
-        await db.collection(config.countWeeklyCollectionName).insertOne({
-          ...countRecordWithPeriods,
-          _id: undefined
-        });
-
-        // Write to monthly count collection
-        await db.collection(config.countMonthlyCollectionName).insertOne({
-          ...countRecordWithPeriods,
-          _id: undefined
-        });
+        // Write to additional count collections (simple data copying)
+        await db.collection(config.countDailyCollectionName).insertOne(countRecord);
+        await db.collection(config.countWeeklyCollectionName).insertOne(countRecord);
+        await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
 
         if (this.countTimeouts.has(station)) {
           this.simulateStationCounts(runningState, station, operator);
