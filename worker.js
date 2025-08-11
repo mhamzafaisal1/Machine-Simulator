@@ -313,7 +313,12 @@ async function runSimulator() {
         // Insert into state collection
         const result = await stateCollection.insertOne(record);
         delete record['_id'];
-    
+
+        // Write to additional state collections (simple data copying)
+        await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
+        await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
+        await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
+
         // Upsert into stateTicker (remove _id)
         const tickerRecord = JSON.parse(JSON.stringify(record));
         console.log(`[${new Date().toISOString()}] ✅ Ticker record: ${tickerRecord}`);
@@ -401,7 +406,12 @@ async function runSimulator() {
           }
     
           await collection.insertOne(countRecord);
-    
+
+                  // Write to additional count collections (simple data copying)
+        await db.collection(config.countDailyCollectionName).insertOne(countRecord);
+        await db.collection(config.countWeeklyCollectionName).insertOne(countRecord);
+        await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
+
           const updatedStats = await db.command({ collStats: config.countCollectionName });
           console.log(`   📈 Total documents in count collection: ${updatedStats.count}`);
           console.log('   ──────────────────────────────────────────────');

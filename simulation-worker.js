@@ -323,9 +323,18 @@ class MachineSimulator {
     }
 
     const db = this.client.db(this.dbName);
+    
+    // Write to main state-machine collection
     await db.collection(this.collectionName).insertOne(record);
     delete record._id;
 
+    // Write to additional state collections (simple data copying)
+    await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
+    await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
+    await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
+    delete record._id;
+
+    // Update state ticker
     await db.collection(config.stateTickerCollectionName).updateOne(
       { "machine.serial": record.machine.serial },
       { $set: record },
@@ -407,7 +416,13 @@ class MachineSimulator {
           countRecord.misfeed = true;
         }
 
+        // Write to main count collection
         await collection.insertOne(countRecord);
+
+        // Write to additional count collections (simple data copying)
+        await db.collection(config.countDailyCollectionName).insertOne(countRecord);
+        await db.collection(config.countWeeklyCollectionName).insertOne(countRecord);
+        await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
 
         if (this.countTimeouts.has(station)) {
           this.simulateStationCounts(runningState, station, operator);
