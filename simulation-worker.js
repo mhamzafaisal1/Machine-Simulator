@@ -353,7 +353,7 @@ class MachineSimulator {
   async simulationLoop() {
     while (this.isRunning) {
       await this.writeState("Timeout");
-      await this.delay(getRandomDelay(1, 5));
+      await this.delay(getRandomDelay(0.25, 1.25));
       if (!this.isRunning) break;
 
       await this.writeState("Running");
@@ -366,7 +366,7 @@ class MachineSimulator {
       // Select next item when machine stops (before delay)
       this.selectNextItem();
 
-      await this.delay(getRandomDelay(1, 5));
+      await this.delay(getRandomDelay(0.25, 1.25));
     }
   }
 
