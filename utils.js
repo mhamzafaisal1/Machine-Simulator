@@ -204,7 +204,7 @@ function selectRandomItem(items) {
 // New function to determine if item should change based on 85/15 rule
 function shouldChangeItem() {
   const randomValue = Math.random() * 100;
-  const shouldChange = randomValue >= 85; // 15% chance to change item
+  const shouldChange = randomValue >= 95; // 5% chance to change item
   
   console.log(`[${new Date().toISOString()}] 🎲 Item change roll: ${randomValue.toFixed(2)} - ${shouldChange ? 'Changing item' : 'Keeping same item'}`);
   return shouldChange;

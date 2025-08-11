@@ -134,8 +134,8 @@ class MachineSimulator {
       let candidateOperator = null;
       let useLast = false;
 
-      if (lastAssignment && Math.random() < 0.85) {
-        // 85%: try to reuse last operator
+      if (lastAssignment && Math.random() < 0.98) {
+        // 98%: try to reuse last operator
         const lastOperator = filteredOperators.find(op => op.code === lastAssignment.operatorId);
 
         // Check if last operator is still available (not assigned to other machines/lanes)
