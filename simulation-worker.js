@@ -329,12 +329,10 @@ class MachineSimulator {
     delete record._id;
 
     // Write to additional state collections (simple data copying)
-    delete record._id;
     await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
-    delete record._id;
     await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
-    delete record._id;
     await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
+    delete record._id;
 
     // Update state ticker
     await db.collection(config.stateTickerCollectionName).updateOne(
