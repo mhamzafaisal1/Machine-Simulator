@@ -12,11 +12,17 @@ module.exports = {
     stateTickerCollectionName: 'stateTicker',
     simulatedOperatorsTickerCollectionName: 'simulated-operators-ticker',
     
-    // Additional collections for state data (same data, multiple collections)
+        // Additional collections for state data (same data, multiple collections)
     stateMachineDailyCollectionName: 'state-machine-daily',
     stateMachineWeeklyCollectionName: 'state-machine-weekly',
     stateMachineMonthlyCollectionName: 'state-machine-monthly',
-    
+
+    // Additional collections for operator state data (one record per operator)
+    stateOperatorCollectionName: 'state-operator',
+    stateOperatorDailyCollectionName: 'state-operator-daily',
+    stateOperatorWeeklyCollectionName: 'state-operator-weekly',
+    stateOperatorMonthlyCollectionName: 'state-operator-monthly',
+
     // Additional collections for count data (same data, multiple collections)
     countDailyCollectionName: 'count-daily',
     countWeeklyCollectionName: 'count-weekly',

@@ -255,6 +255,36 @@ class MachineSimulator {
     }
   }
 
+  async writeOperatorStateRecords(record) {
+    try {
+      const db = this.client.db(this.dbName);
+      
+      // Write operator-specific records to all operator collections
+      if (record.operators && record.operators.length > 0) {
+        for (const operator of record.operators) {
+          if (operator.id !== -1) { // Skip dummy operators
+            // Create operator-specific record
+            const operatorRecord = {
+              ...record,
+              operators: [operator] // Single operator instead of array
+            };
+            
+            // Write to main operator collection
+            await db.collection(config.stateOperatorCollectionName).insertOne(operatorRecord);
+            
+            // Write to additional operator collections
+            await db.collection(config.stateOperatorDailyCollectionName).insertOne(operatorRecord);
+            await db.collection(config.stateOperatorWeeklyCollectionName).insertOne(operatorRecord);
+            await db.collection(config.stateOperatorMonthlyCollectionName).insertOne(operatorRecord);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error writing operator state records:`, error.message);
+      // Don't throw - keep this separate from main state writes
+    }
+  }
+
   async writeState(stateType) {
     if (stateType === "Timeout" || stateType === "Fault") {
       this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
@@ -332,6 +362,9 @@ class MachineSimulator {
     await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
     await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
     delete record._id;
+
+    // Write operator-specific records to operator collections
+    await this.writeOperatorStateRecords(record);
 
     // Update state ticker
     await db.collection(config.stateTickerCollectionName).updateOne(
