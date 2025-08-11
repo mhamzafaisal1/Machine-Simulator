@@ -133,36 +133,36 @@ class MachineSimulator {
       );
       let candidateOperator = null;
       let useLast = false;
-      
+
       if (lastAssignment && Math.random() < 0.85) {
         // 85%: try to reuse last operator
         const lastOperator = filteredOperators.find(op => op.code === lastAssignment.operatorId);
-        
+
         // Check if last operator is still available (not assigned to other machines/lanes)
         const currentAssignment = currentlyAssignedOperators.get(lastAssignment.operatorId);
-        if (lastOperator && (!currentAssignment || 
-            (currentAssignment.machineSerial === machineSerial && currentAssignment.station === station))) {
+        if (lastOperator && (!currentAssignment ||
+          (currentAssignment.machineSerial === machineSerial && currentAssignment.station === station))) {
           candidateOperator = lastOperator;
           useLast = true;
         }
       }
-      
+
       if (!candidateOperator) {
         // 15% or no last or last operator unavailable: pick a new operator
         // Get all currently assigned operator IDs (across all machines and lanes)
         const allAssignedOperatorIds = Array.from(currentlyAssignedOperators.keys());
-        
+
         // Filter out operators that are currently assigned anywhere
         const availableOperators = filteredOperators.filter(
           op => !allAssignedOperatorIds.includes(op.code)
         );
-        
+
         // Remove last operator from available if present (to force new)
         if (lastAssignment) {
           const idx = availableOperators.findIndex(op => op.code === lastAssignment.operatorId);
           if (idx !== -1) availableOperators.splice(idx, 1);
         }
-        
+
         if (availableOperators.length > 0) {
           // Pick random available operator
           candidateOperator = availableOperators[Math.floor(Math.random() * availableOperators.length)];
@@ -173,47 +173,47 @@ class MachineSimulator {
           console.log(`[${this.getTimestamp()}] ⚠️ Emergency fallback: reusing operator ${lastAssignment.operatorId} despite conflicts`);
         }
       }
-      
+
       // Final fallback: use any operator if still no candidate
       if (!candidateOperator && filteredOperators.length > 0) {
         candidateOperator = filteredOperators[station % filteredOperators.length];
         console.log(`[${this.getTimestamp()}] ⚠️ Final fallback: using operator ${candidateOperator.code} for station ${station}`);
       }
-      
+
       // Assign operator with atomic upsert to prevent race conditions
       if (candidateOperator) {
         try {
           // Use findOneAndUpdate with upsert for atomic operation
           const result = await tickerCollection.findOneAndUpdate(
-            { 
+            {
               $or: [
                 { operatorId: candidateOperator.code },
                 { machineSerial: machineSerial, station: station }
               ]
             },
-            { 
-              $set: { 
-                operatorId: candidateOperator.code, 
-                machineSerial, 
+            {
+              $set: {
+                operatorId: candidateOperator.code,
+                machineSerial,
                 station,
                 lastUpdated: new Date()
-              } 
+              }
             },
-            { 
+            {
               upsert: true,
               returnDocument: 'after'
             }
           );
-          
+
           // Update our local tracking
           currentlyAssignedOperators.set(candidateOperator.code, {
             machineSerial: machineSerial,
             station: station
           });
-          
+
           assignedOperators.push({ id: candidateOperator.code, station });
           console.log(`[${this.getTimestamp()}] 👤 Assigned operator ${candidateOperator.code} to station ${station} on machine ${machineSerial}${useLast ? ' (reused)' : ' (new)'}`);
-          
+
         } catch (error) {
           console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.code} to station ${station}:`, error.message);
           // Fallback to dummy operator
@@ -225,7 +225,7 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] ⚠️ No operator available for station ${station}, using dummy operator`);
       }
     }
-    
+
     // For inactive stations, assign dummy or -1 as before
     // For inactive stations, assign -1 (no operator)
     // for (let station = 1; station <= machineLanes; station++) {
@@ -233,7 +233,7 @@ class MachineSimulator {
     //     assignedOperators.push({ id: -1, station });
     //   }
     // }
-    
+
     // Sort by station
     assignedOperators.sort((a, b) => a.station - b.station);
     return assignedOperators;
@@ -243,7 +243,7 @@ class MachineSimulator {
     const db = this.client.db(this.dbName);
     const machineSerial = this.machineConfig.serial;
     const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
-    
+
     try {
       // Remove all operator assignments for this machine
       const result = await tickerCollection.deleteMany({ machineSerial: machineSerial });
@@ -260,37 +260,37 @@ class MachineSimulator {
       this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
       this.countTimeouts.clear();
       this.currentRunningState = null;
-      
+
       // Clean up operator assignments when machine stops running
       await this.cleanupOperatorAssignments();
     }
 
     let record;
-    
+
     if (stateType === "Running") {
       // Use new operator assignment logic for Running state
       const assignedOperators = await this.assignOperatorsForRunningState();
-      
+
       // Build state record with assigned operators
       const statusMap = {
         Timeout: { code: 0, name: "Timeout", softrolColor: "Grey" },
         Running: { code: 1, name: "Run", softrolColor: "Green" },
-        Fault:   { code: 0, name: "Fault", softrolColor: "Red" } // Will be overridden with actual fault code
+        Fault: { code: 0, name: "Fault", softrolColor: "Red" } // Will be overridden with actual fault code
       };
       const status = statusMap[stateType];
-      
+
       const targetConfig = this.machineConfig;
-      
+
       // Use current item for all stations
       const items = {};
       const maxStations = targetConfig.lanes || 1;
       for (let i = 0; i < maxStations; i++) {
-        items[i.toString()] = { 
-          id: this.currentItem.number, 
-          count: 0 
+        items[i.toString()] = {
+          id: this.currentItem.number,
+          count: 0
         };
       }
-      
+
       record = {
         timestamp: new Date(),
         machine: {
@@ -323,10 +323,9 @@ class MachineSimulator {
     }
 
     const db = this.client.db(this.dbName);
-    
+
     // Write to main state-machine collection
     await db.collection(this.collectionName).insertOne(record);
-    delete record._id;
 
     // Write to additional state collections (simple data copying)
     await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
@@ -363,10 +362,10 @@ class MachineSimulator {
 
       const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
       await this.writeState(nextState);
-      
+
       // Select next item when machine stops (before delay)
       this.selectNextItem();
-      
+
       await this.delay(getRandomDelay(1, 5));
     }
   }
@@ -423,6 +422,11 @@ class MachineSimulator {
         await db.collection(config.countDailyCollectionName).insertOne(countRecord);
         await db.collection(config.countWeeklyCollectionName).insertOne(countRecord);
         await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
+
+        await db.collection(config.stateTickerCollectionName).updateOne(
+          { "machine.serial": record.machine.serial },
+          { $set: {timestamp: $currentDate } }
+        );
 
         if (this.countTimeouts.has(station)) {
           this.simulateStationCounts(runningState, station, operator);
