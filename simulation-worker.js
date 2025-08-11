@@ -424,7 +424,7 @@ class MachineSimulator {
         await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
 
         await db.collection(config.stateTickerCollectionName).updateOne(
-          { "machine.serial": record.machine.serial },
+          { "machine.serial": countRecord.machine.serial },
           { $set: {timestamp: $currentDate } }
         );
 
