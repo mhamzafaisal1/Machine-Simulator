@@ -14,6 +14,7 @@
     "test-mongo": "node test-mongo-integration.js",
     "test-operators": "node test-operator-uniqueness.js",
     "test-collections": "node test-new-collections.js",
+    "test-sessions": "node test-session-tracking.js",
             "demo-collections": "node demo-simple-collections.js",
     "verify": "node verify-implementation.js",
     "validate": "node -e \"require('./fillmore-machines').validateAllMachines()\"",
@@ -32,7 +33,8 @@
   "license": "ISC",
   "description": "Multi-station machine simulator for ChiTrac system - supports individual machines and full Fillmore facility simulation",
   "dependencies": {
-    "mongodb": "^6.17.0"
+    "mongodb": "^6.17.0",
+    "luxon": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^24.1.0"

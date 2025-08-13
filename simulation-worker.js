@@ -1,6 +1,7 @@
 // simulation-worker.js - Main file for the generating workers.
 
 const { MongoClient } = require('mongodb');
+const { DateTime, Duration } = require('luxon');
 const {
   getRandomDelay,
   buildStateRecord,
@@ -29,7 +30,10 @@ class MachineSimulator {
     this.collectionName = config.collectionName;
     this.countCollectionName = config.countCollectionName;
     this.inSession = false;
-
+    
+    // Session tracking properties
+    this.currentSessionId = null;
+    this.currentSessionStartTime = null;
   }
 
   async start() {
@@ -240,6 +244,217 @@ class MachineSimulator {
     }
   }
 
+  async startMachineSession(runningState) {
+    try {
+      const db = this.client.db(this.dbName);
+      const sessionCollection = db.collection(config.machineSessionCollectionName);
+      
+      // Get current items being simulated
+      const currentItems = [];
+      if (this.currentItem) {
+        if (this.machineConfig.type === 'SPF') {
+          // TODO: if/when lanes can run different items, pick 4 distinct defs.
+          // For now, include 4 copies logically representing 4 item definitions.
+          for (let i = 0; i < 4; i++) {
+            currentItems.push({
+              id: this.currentItem.number,
+              name: this.currentItem.name,
+              standard: this.currentItem.standard,
+            });
+          }
+        } else {
+          // Non-SPF → single item definition
+          currentItems.push({
+            id: this.currentItem.number,
+            name: this.currentItem.name,
+            standard: this.currentItem.standard,
+          });
+        }
+      }
+      
+      // Get operator details with names
+      const operatorsWithNames = [];
+      for (const operator of runningState.operators) {
+        if (operator.id !== -1) {
+          const operatorName = await getOperatorName(db, operator.id);
+          operatorsWithNames.push({
+            id: operator.id,
+            name: operatorName,
+            station: operator.station
+          });
+        } else {
+          operatorsWithNames.push({
+            id: operator.id,
+            name: "None",
+            station: operator.station
+          });
+        }
+      }
+      
+      // Create initial session object
+      const sessionData = {
+        timestamps: {
+          start: runningState.timestamp
+        },
+        counts: [],
+        misfeeds: [],
+        states: [runningState],
+        items: currentItems,
+        operators: operatorsWithNames,
+        startState: runningState,
+        machine: runningState.machine,
+        program: {
+          mode: "smallPiece",
+          programNumber: 1,
+          batchNumber: Math.floor(Math.random() * 21) + 20,
+          accountNumber: 0,
+          speed: 0,
+          stations: this.machineConfig.lanes || 1
+        }
+      };
+      
+      // Insert session into database
+      const result = await sessionCollection.insertOne(sessionData);
+      this.currentSessionId = result.insertedId;
+      this.currentSessionStartTime = runningState.timestamp;
+      
+      console.log(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error starting machine session:`, error.message);
+      this.currentSessionId = null;
+      this.currentSessionStartTime = null;
+    }
+  }
+
+  async updateSessionStats(sessionId = this.currentSessionId) {
+    if (!sessionId) return;
+    
+    try {
+      const db = this.client.db(this.dbName);
+      const sessionCollection = db.collection(config.machineSessionCollectionName);
+      
+      // Get current session
+      const session = await sessionCollection.findOne({ _id: sessionId });
+      if (!session) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ Session ${sessionId} not found for stats update`);
+        return;
+      }
+      
+      // Calculate end time (use current time for active sessions, or session end time for completed)
+      const endTime = session.timestamps.end || new Date();
+      const startTime = DateTime.fromJSDate(session.timestamps.start);
+      const endDateTime = DateTime.fromJSDate(endTime);
+      
+      // Calculate runtime in seconds
+      const runtime = endDateTime.diff(startTime, 'seconds').seconds;
+      
+      // Calculate work time (runtime * active stations)
+      const activeStations = session.operators.filter(op => op.id !== -1).length;
+      const workTime = runtime * activeStations;
+      
+      // Calculate total counts
+      const totalCount = session.counts.length;
+      const misfeedCount = session.misfeeds.length;
+      
+      // Time-credit normalization (PPM→PPH)
+      const normalizePPH = (std) => {
+        const n = Number(std) || 0;
+        return n < 60 ? n * 60 : n; // treat <60 as PPM => convert to PPH
+      };
+      
+      // Calculate total time credit
+      let totalTimeCredit = 0;
+      
+      if (session.items.length === 1) {
+        // Single item type - simple calculation
+        const item = session.items[0];
+        const pph = normalizePPH(item.standard);
+        if (pph > 0) totalTimeCredit = totalCount / (pph / 3600);
+      } else {
+        // Multiple item types - calculate per item type
+        const itemTypeCounts = {};
+        
+        // Group counts by item type
+        for (const count of session.counts) {
+          const itemId = count.item?.id;
+          if (itemId) {
+            itemTypeCounts[itemId] = (itemTypeCounts[itemId] || 0) + 1;
+          }
+        }
+        
+        // Calculate time credit for each item type
+        for (const [itemId, countTotal] of Object.entries(itemTypeCounts)) {
+          const item = session.items.find(i => i.id === parseInt(itemId));
+          const pph = item ? normalizePPH(item.standard) : 0;
+          if (pph > 0) totalTimeCredit += countTotal / (pph / 3600);
+        }
+      }
+      
+      // Update session with calculated stats
+      const updateData = {
+        activeStations,
+        runtime: Math.round(runtime),
+        workTime: Math.round(workTime),
+        totalCount,
+        misfeedCount,
+        totalTimeCredit: Number(totalTimeCredit.toFixed(2))
+      };
+      
+      // If session is completed, also update end timestamp
+      if (session.timestamps.end) {
+        updateData['timestamps.end'] = session.timestamps.end;
+        updateData['endState'] = session.endState;
+      }
+      
+      await sessionCollection.updateOne(
+        { _id: sessionId },
+        { $set: updateData }
+      );
+      
+      console.log(`[${this.getTimestamp()}] 📊 Updated session ${sessionId} stats: runtime=${Math.round(runtime)}s, workTime=${Math.round(workTime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${Number(totalTimeCredit.toFixed(2))}s`);
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error updating session stats:`, error.message);
+    }
+  }
+
+  async endMachineSession(endState) {
+    if (!this.currentSessionId) return;
+    
+    try {
+      const db = this.client.db(this.dbName);
+      const sessionCollection = db.collection(config.machineSessionCollectionName);
+      
+      // Update session with end information
+      await sessionCollection.updateOne(
+        { _id: this.currentSessionId },
+        {
+          $set: {
+            'timestamps.end': endState.timestamp,
+            endState: endState
+          },
+          $push: {
+            states: endState
+          }
+        }
+      );
+      
+      // Run final stats calculation
+      await this.updateSessionStats();
+      
+      console.log(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
+      
+      // Reset session tracking
+      this.currentSessionId = null;
+      this.currentSessionStartTime = null;
+      this.inSession = false; // Ensure flag is always consistent
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error ending machine session:`, error.message);
+    }
+  }
+
   async writeOperatorStateRecords(record) {
     try {
       const db = this.client.db(this.dbName);
@@ -274,9 +489,8 @@ class MachineSimulator {
     if (stateType === "Timeout" || stateType === "Fault") {
       this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
       this.countTimeouts.clear();
-       if (stateType === "Timeout") {
-           this.inSession = false;                 // end of session happens on Timeout
-         }
+      // Leaving Run ends the session on both Timeout and Fault
+      this.inSession = false;
       // Don't clear currentRunningState or cleanup operators - preserve session state
     }
 
@@ -319,6 +533,11 @@ class MachineSimulator {
         operators: assignedOperators,
         status: { code: 1, name: "Run", softrolColor: "Green" }
       };
+      
+      // Start new machine session if this is a new session
+      if (isNewSession) {
+        await this.startMachineSession(record);
+      }
     } else {
       // Fault/Timeout reuse operators + program/items from last Running
       const prev = this.currentRunningState;
@@ -349,6 +568,11 @@ class MachineSimulator {
         operators: prev?.operators ?? [],
         status
       };
+      
+      // End machine session on Fault or Timeout
+      if (this.currentSessionId) {
+        await this.endMachineSession(record);
+      }
     }
 
     const db = this.client.db(this.dbName);
@@ -408,6 +632,20 @@ class MachineSimulator {
     this.countTimeouts.clear();
     this.isRunning = false;
     
+    // End current session if one is active
+    if (this.currentSessionId) {
+      try {
+        const endState = {
+          timestamp: new Date(),
+          machine: this.machineConfig,
+          status: { code: 0, name: "Stopped", softrolColor: "Grey" }
+        };
+        await this.endMachineSession(endState);
+      } catch (error) {
+        console.error(`[${this.getTimestamp()}] ❌ Error ending session on stop:`, error.message);
+      }
+    }
+    
     // Clean up operator assignments when simulator stops
     await this.cleanupOperatorAssignments();
     
@@ -463,6 +701,33 @@ class MachineSimulator {
           { "machine.serial": countRecord.machine.serial },
           { $set: {timestamp: new Date() } }
         );
+
+        // Update machine session with new count/misfeed
+        if (this.currentSessionId) {
+          try {
+            const sessionCollection = db.collection(config.machineSessionCollectionName);
+            
+            if (isMisfeed) {
+              // Add misfeed to session
+              await sessionCollection.updateOne(
+                { _id: this.currentSessionId },
+                { $push: { misfeeds: countRecord } }
+              );
+            } else {
+              // Add valid count to session
+              await sessionCollection.updateOne(
+                { _id: this.currentSessionId },
+                { $push: { counts: countRecord } }
+              );
+            }
+            
+            // Recalculate session stats after adding count/misfeed
+            await this.updateSessionStats();
+            
+          } catch (sessionError) {
+            console.error(`[${this.getTimestamp()}] ❌ Error updating session with count:`, sessionError.message);
+          }
+        }
 
         if (this.countTimeouts.has(station)) {
           this.simulateStationCounts(runningState, station, operator);
