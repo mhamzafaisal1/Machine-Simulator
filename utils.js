@@ -145,11 +145,7 @@ async function getStationOperators(db, machineConfig = null) {
 function getRandomItemPerStation(machineConfig = null) {
   console.warn(`[${new Date().toISOString()}] ⚠️ getRandomItemPerStation() is deprecated. Items are now loaded from MongoDB.`);
   // Return a fallback structure for backward compatibility
-  const items = {};
-  const maxStations = (machineConfig || config.machine).lanes || 1;
-  for (let i = 0; i < maxStations; i++) {
-    items[i.toString()] = { id: 26, count: 0 }; // Fallback to default item ID
-  }
+  const items = [{ id: 26, count: 0 }]; // Default fallback item as array, not object
   return items;
 }
 
@@ -266,11 +262,7 @@ async function buildStateRecord(db, stateType, machineConfig = null) {
     }
   }
 
-  const items = {};
-  const maxStations = targetConfig.lanes || 1;
-  for (let i = 0; i < maxStations; i++) {
-    items[i.toString()] = { id: 26, count: 0 }; // Default fallback item
-  }
+  const items = [{ id: 26, count: 0 }]; // Default fallback item as array, not object
 
   const operators = await getStationOperators(db, machineConfig);
   const activeStations = getActiveStations(machineConfig);
