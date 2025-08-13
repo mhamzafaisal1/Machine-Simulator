@@ -12,6 +12,12 @@ module.exports = {
     stateTickerCollectionName: 'stateTicker',
     simulatedOperatorsTickerCollectionName: 'simulated-operators-ticker',
     
+    // Machine session tracking collection
+    machineSessionCollectionName: 'machine-session',
+    
+    // Operator session tracking collection
+    operatorSessionCollectionName: 'operator-session',
+    
         // Additional collections for state data (same data, multiple collections)
     stateMachineDailyCollectionName: 'state-machine-daily',
     stateMachineWeeklyCollectionName: 'state-machine-weekly',
