@@ -23,13 +23,28 @@ class MachineSimulator {
     this.currentRunningState = null;
     this.validFaults = [];
     this.items = []; // Array to store loaded items
-    this.currentItem = null; // Currently selected item
+    this.currentItem = null; // Currently selected item for non-SPF machines
+    this.currentItems = []; // Array to store 4 items for SPF machines
     this.mongoUri = config.mongoUri;
     this.dbName = config.dbName;
     this.collectionName = config.collectionName;
     this.countCollectionName = config.countCollectionName;
     this.inSession = false;
+  }
 
+  // Helper method to check if machine is SPF
+  isSpf() {
+    return String(this.machineConfig.type).toUpperCase() === 'SPF';
+  }
+
+  // Helper method to pick distinct random items
+  pickDistinct(items, n) {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy.slice(0, Math.min(n, copy.length));
   }
 
   async start() {
@@ -72,14 +87,29 @@ class MachineSimulator {
   }
 
   selectInitialItem() {
-    this.currentItem = selectRandomItem(this.items);
+    if (this.isSpf()) {
+      this.currentItems = this.pickDistinct(this.items, 4);  // exactly four
+      console.log(`[${this.getTimestamp()}] 🎯 SPF initial items: ${this.currentItems.map(i => i.name).join(', ')}`);
+    } else {
+      this.currentItem = selectRandomItem(this.items);       // exactly one
+    }
   }
 
   selectNextItem() {
-    if (shouldChangeItem()) {
-      this.currentItem = selectRandomItem(this.items);
+    if (!shouldChangeItem()) {
+      if (this.isSpf()) {
+        console.log(`[${this.getTimestamp()}] 🔄 Keeping current item set`);
+      } else {
+        console.log(`[${this.getTimestamp()}] 🔄 Keeping current item: ${this.currentItem.name}`);
+      }
+      return;
+    }
+    
+    if (this.isSpf()) {
+      this.currentItems = this.pickDistinct(this.items, 4);
+      console.log(`[${this.getTimestamp()}] 🔁 SPF new items: ${this.currentItems.map(i => i.name).join(', ')}`);
     } else {
-      console.log(`[${this.getTimestamp()}] 🔄 Keeping current item: ${this.currentItem.name}`);
+      this.currentItem = selectRandomItem(this.items);
     }
   }
 
@@ -291,13 +321,16 @@ class MachineSimulator {
         this.inSession = true;                    // now we are in-session
       // Build Running record with assigned operators
       const targetConfig = this.machineConfig;
-      const items = {};
-      const maxStations = targetConfig.lanes || 1;
-      for (let i = 0; i < maxStations; i++) {
-        items[i.toString()] = {
-          id: this.currentItem.number,
-          count: 0
-        };
+      
+      // Build items array with correct cardinality
+      let itemsArr;
+      if (this.isSpf()) {
+        // exactly four entries (or fewer if DB has <4)
+        itemsArr = this.currentItems.map(i => ({ id: i.number, count: 0 }));
+        while (itemsArr.length < 4) itemsArr.push({ id: this.currentItems[0].number, count: 0 }); // pad to 4 if needed
+      } else {
+        // exactly one entry for all non-SPF machines
+        itemsArr = [{ id: this.currentItem.number, count: 0 }];
       }
 
       record = {
@@ -314,7 +347,7 @@ class MachineSimulator {
           accountNumber: 0,
           speed: 0,
           stations: targetConfig.lanes,
-          items
+          items: itemsArr                 // ✅ now an ARRAY with correct cardinality
         },
         operators: assignedOperators,
         status: { code: 1, name: "Run", softrolColor: "Green" }
@@ -344,7 +377,9 @@ class MachineSimulator {
           accountNumber: 0,
           speed: 0,
           stations: targetConfig.lanes,
-          items: Object.fromEntries(Array.from({ length: targetConfig.lanes || 1 }, (_, i) => [String(i), { id: 26, count: 0 }]))
+          items: this.isSpf()
+            ? (this.currentItems.length ? this.currentItems.map(i => ({ id: i.number, count: 0 })) : [{ id: 26, count: 0 }, { id: 26, count: 0 }, { id: 26, count: 0 }, { id: 26, count: 0 }])
+            : (this.currentItem ? [{ id: this.currentItem.number, count: 0 }] : [{ id: 26, count: 0 }])
         },
         operators: prev?.operators ?? [],
         status
@@ -416,8 +451,13 @@ class MachineSimulator {
   }
 
   simulateStationCounts(runningState, station, operator) {
+    // Choose the correct item for this station
+    const itemForThisStation = this.isSpf()
+      ? this.currentItems[(Math.max(1, station) - 1) % Math.max(1, this.currentItems.length || 1)]
+      : this.currentItem;
+    
     // Calculate timing based on current item
-    const timing = calculateItemTiming(this.currentItem);
+    const timing = calculateItemTiming(itemForThisStation);
     const delayMs = (Math.floor(Math.random() * (timing.highRange - timing.lowRange + 1)) + timing.lowRange) * 1000;
 
     const timeout = setTimeout(async () => {
@@ -443,9 +483,9 @@ class MachineSimulator {
         if (!isMisfeed) {
           // Include current item information
           countRecord.item = {
-            id: this.currentItem.number,
-            name: this.currentItem.name,
-            standard: this.currentItem.standard
+            id: itemForThisStation.number,
+            name: itemForThisStation.name,
+            standard: itemForThisStation.standard
           };
         } else {
           countRecord.misfeed = true;
