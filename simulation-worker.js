@@ -310,7 +310,10 @@ class MachineSimulator {
           accountNumber: 0,
           speed: 0,
           stations: this.machineConfig.lanes || 1
-        }
+        },
+        // Initialize per-item arrays with zeros
+        totalByItem: currentItems.map(() => 0),
+        timeCreditByItem: currentItems.map(() => 0)
       };
       
       // Insert session into database
@@ -364,14 +367,23 @@ class MachineSimulator {
         return n < 60 ? n * 60 : n; // treat <60 as PPM => convert to PPH
       };
       
-      // Calculate total time credit
+      // Calculate total time credit and per-item breakdowns
       let totalTimeCredit = 0;
+      const totalByItem = [];
+      const timeCreditByItem = [];
       
       if (session.items.length === 1) {
         // Single item type - simple calculation
         const item = session.items[0];
         const pph = normalizePPH(item.standard);
-        if (pph > 0) totalTimeCredit = totalCount / (pph / 3600);
+        if (pph > 0) {
+          totalTimeCredit = totalCount / (pph / 3600);
+          totalByItem.push(totalCount);
+          timeCreditByItem.push(totalTimeCredit);
+        } else {
+          totalByItem.push(0);
+          timeCreditByItem.push(0);
+        }
       } else {
         // Multiple item types - calculate per item type
         const itemTypeCounts = {};
@@ -384,11 +396,20 @@ class MachineSimulator {
           }
         }
         
-        // Calculate time credit for each item type
-        for (const [itemId, countTotal] of Object.entries(itemTypeCounts)) {
-          const item = session.items.find(i => i.id === parseInt(itemId));
-          const pph = item ? normalizePPH(item.standard) : 0;
-          if (pph > 0) totalTimeCredit += countTotal / (pph / 3600);
+        // Calculate totals and time credits for each item in the session items array
+        for (const item of session.items) {
+          const countTotal = itemTypeCounts[item.id] || 0;
+          const pph = normalizePPH(item.standard);
+          
+          totalByItem.push(countTotal);
+          
+          if (pph > 0) {
+            const itemTimeCredit = countTotal / (pph / 3600);
+            timeCreditByItem.push(itemTimeCredit);
+            totalTimeCredit += itemTimeCredit;
+          } else {
+            timeCreditByItem.push(0);
+          }
         }
       }
       
@@ -399,7 +420,9 @@ class MachineSimulator {
         workTime: Math.round(workTime),
         totalCount,
         misfeedCount,
-        totalTimeCredit: Number(totalTimeCredit.toFixed(2))
+        totalTimeCredit: Number(totalTimeCredit.toFixed(2)),
+        totalByItem,
+        timeCreditByItem
       };
       
       // If session is completed, also update end timestamp
