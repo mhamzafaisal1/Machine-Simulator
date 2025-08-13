@@ -41,6 +41,10 @@ class MachineSimulator {
       await this.loadFaults();
       await this.loadItems();
       this.selectInitialItem();
+      
+      // Assign operators before starting simulation loop to ensure first state has operators
+      await this.assignInitialOperators();
+      
       this.isRunning = true;
       await this.simulationLoop();
     } catch (error) {
@@ -73,6 +77,15 @@ class MachineSimulator {
 
   selectInitialItem() {
     this.currentItem = selectRandomItem(this.items);
+  }
+
+  async assignInitialOperators() {
+    // Assign operators before the first state is written
+    const assignedOperators = await this.assignOperatorsForRunningState();
+    this.currentRunningState = {
+      operators: assignedOperators
+    };
+    console.log(`[${this.getTimestamp()}] 👥 Assigned ${assignedOperators.length} initial operators for ${this.machineConfig.name}`);
   }
 
   selectNextItem() {
@@ -117,7 +130,7 @@ class MachineSimulator {
     // Preload all < 500000, then we'll apply the "startsWith('1')" rule in JS
     const allValidByRange = await operatorsCollection.find(
       { code: { $lt: 500000 } },
-      { projection: { _id: 0, code: 1 } }
+      { projection: { _id: 0, code: 1, name: 1 } }
     ).toArray();
 
     for (const station of activeStations) {
@@ -137,7 +150,7 @@ class MachineSimulator {
         const lastIsAllowed = String(lastAssignment.operatorId).startsWith('1') && allValidByRange.some(op => op.code === lastAssignment.operatorId);
 
         if (ok && lastIsAllowed) {
-          candidateOperator = { code: lastAssignment.operatorId };
+          candidateOperator = { code: lastAssignment.operatorId, name: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.name || "Unknown" };
           useLast = true;
         }
       }
@@ -151,7 +164,7 @@ class MachineSimulator {
         // DB filter for range + occupancy, then JS filter for "startsWith('1')"
         const poolDb = await operatorsCollection.find(
           { code: { $lt: 500000, $nin: Array.from(unavailable) } },
-          { projection: { _id: 0, code: 1 } }
+          { projection: { _id: 0, code: 1, name: 1 } }
         ).toArray();
 
         const pool = poolDb.filter(op => String(op.code).startsWith('1'));
@@ -160,7 +173,7 @@ class MachineSimulator {
           candidateOperator = pool[Math.floor(Math.random() * pool.length)];
         } else if (lastAssignment?.operatorId && String(lastAssignment.operatorId).startsWith('1')) {
           // fallback: reuse last if no one else is available and last fits your rule
-          candidateOperator = { code: lastAssignment.operatorId };
+          candidateOperator = { code: lastAssignment.operatorId, name: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.name || "Unknown" };
           useLast = true;
         }
       }
@@ -192,8 +205,8 @@ class MachineSimulator {
 
           // Update our local tracking
           currentlySimulatedIds.push(candidateOperator.code);
-          assignedOperators.push({ id: candidateOperator.code, station });
-          console.log(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.code} to station ${station} on machine ${machineSerial}`);
+          assignedOperators.push({ id: candidateOperator.code, name: candidateOperator.name, station });
+          console.log(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.code} (${candidateOperator.name}) to station ${station} on machine ${machineSerial}`);
 
         } catch (error) {
           if (error.code === 11000) {
@@ -201,20 +214,20 @@ class MachineSimulator {
             console.warn(`[${this.getTimestamp()}] ⚠️ Duplicate operator ${candidateOperator.code}; selecting another`);
             const altPoolDb = await operatorsCollection.find(
               { code: { $lt: 500000, $nin: currentlySimulatedIds } },
-              { projection: { _id: 0, code: 1 } }
+              { projection: { _id: 0, code: 1, name: 1 } }
             ).toArray();
             const altPool = altPoolDb.filter(op => String(op.code).startsWith('1'));
             const alt = altPool.find(op => op.code !== (lastAssignment?.operatorId ?? -1));
-            assignedOperators.push({ id: alt ? alt.code : -1, station });
+            assignedOperators.push({ id: alt ? alt.code : -1, name: alt ? alt.name : "Unknown", station });
           } else {
             console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.code} to station ${station}:`, error.message);
             // Fallback to dummy operator
-            assignedOperators.push({ id: -1, station });
+            assignedOperators.push({ id: -1, name: "Dummy", station });
           }
         }
       } else {
         // Fallback: dummy operator
-        assignedOperators.push({ id: -1, station });
+        assignedOperators.push({ id: -1, name: "Dummy", station });
         console.log(`[${this.getTimestamp()}] ⚠️ No operator available for station ${station}, using dummy operator`);
       }
     }
@@ -424,7 +437,8 @@ class MachineSimulator {
       try {
         const db = this.client.db(this.dbName);
         const collection = db.collection(this.countCollectionName);
-        const operatorName = await getOperatorName(db, operator.id);
+        // Use the operator name that's already stored in the operator object
+        const operatorName = operator.name || await getOperatorName(db, operator.id);
         const isMisfeed = Math.floor(Math.random() * 400) <= 1;
 
         const countRecord = {
