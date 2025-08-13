@@ -350,7 +350,8 @@ class MachineSimulator {
       const runtime = endDateTime.diff(startTime, 'seconds').seconds;
       
       // Calculate work time (runtime * active stations)
-      const activeStations = session.operators.filter(op => op.id !== -1).length;
+      // const activeStations = session.operators.filter(op => op.id !== -1).length;
+      const activeStations = Array.isArray(session.operators) ? session.operators.length : 0;
       const workTime = runtime * activeStations;
       
       // Calculate total counts
