@@ -29,7 +29,7 @@ class SimulationManager {
       for (const machine of activeMachines) {
         await this.spawnMachine(machine);
         // Small delay between spawning to avoid overwhelming the system
-        await this.delay(1000);
+        await this.delay(750 + Math.floor(Math.random() * 1000)); // 0.75–1.75s
       }
       
       this.isRunning = true;

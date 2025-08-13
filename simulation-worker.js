@@ -28,6 +28,8 @@ class MachineSimulator {
     this.dbName = config.dbName;
     this.collectionName = config.collectionName;
     this.countCollectionName = config.countCollectionName;
+    this.inSession = false;
+
   }
 
   async start() {
@@ -102,93 +104,76 @@ class MachineSimulator {
 
   async assignOperatorsForRunningState() {
     const db = this.client.db(this.dbName);
-    const activeStations = getActiveStations(this.machineConfig);
-    const machineSerial = this.machineConfig.serial;
     const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
     const operatorsCollection = db.collection(config.operatorCollectionName);
+    const activeStations = getActiveStations(this.machineConfig);
+    const machineSerial = this.machineConfig.serial;
     const assignedOperators = [];
 
-    // Get all operator assignments currently in ticker
-    const allTicker = await tickerCollection.find({}).toArray();
-    // Get all operators from MongoDB, projecting out _id
-    const allOperators = await operatorsCollection.find({}, { projection: { _id: 0 } }).toArray();
+    // Read current occupancy ("ticker")
+    const ticker = await tickerCollection.find({}, { projection: { operatorId: 1, machineSerial: 1, station: 1 } }).toArray();
+    const currentlySimulatedIds = ticker.map(t => t.operatorId).filter(Boolean);
 
-    // Filter out operators starting with 9
-    const filteredOperators = allOperators.filter(op => op.code.toString().startsWith('1'));
-    console.log(`[${this.getTimestamp()}] 📊 Filtered operators: ${allOperators.length} total, ${filteredOperators.length} available (excluded ${allOperators.length - filteredOperators.length} starting with 9)`);
-
-    // Create a map of currently assigned operators for quick lookup
-    const currentlyAssignedOperators = new Map();
-    allTicker.forEach(assignment => {
-      currentlyAssignedOperators.set(assignment.operatorId, {
-        machineSerial: assignment.machineSerial,
-        station: assignment.station
-      });
-    });
+    // Preload all < 500000, then we'll apply the "startsWith('1')" rule in JS
+    const allValidByRange = await operatorsCollection.find(
+      { code: { $lt: 500000 } },
+      { projection: { _id: 0, code: 1 } }
+    ).toArray();
 
     for (const station of activeStations) {
       // Find last operator for this machine/station
-      const lastAssignment = allTicker.find(
+      const lastAssignment = ticker.find(
         t => t.machineSerial === machineSerial && t.station === station
       );
       let candidateOperator = null;
       let useLast = false;
 
+      // 98% chance reuse last per station if still "available" to this station/machine
       if (lastAssignment && Math.random() < 0.98) {
-        // 98%: try to reuse last operator
-        const lastOperator = filteredOperators.find(op => op.code === lastAssignment.operatorId);
+        const stillClaimed = ticker.find(t => t.operatorId === lastAssignment.operatorId);
+        const ok = !stillClaimed || (stillClaimed.machineSerial === machineSerial && stillClaimed.station === station);
 
-        // Check if last operator is still available (not assigned to other machines/lanes)
-        const currentAssignment = currentlyAssignedOperators.get(lastAssignment.operatorId);
-        if (lastOperator && (!currentAssignment ||
-          (currentAssignment.machineSerial === machineSerial && currentAssignment.station === station))) {
-          candidateOperator = lastOperator;
+        // also enforce your "startsWith('1')" rule
+        const lastIsAllowed = String(lastAssignment.operatorId).startsWith('1') && allValidByRange.some(op => op.code === lastAssignment.operatorId);
+
+        if (ok && lastIsAllowed) {
+          candidateOperator = { code: lastAssignment.operatorId };
           useLast = true;
         }
       }
 
       if (!candidateOperator) {
-        // 15% or no last or last operator unavailable: pick a new operator
-        // Get all currently assigned operator IDs (across all machines and lanes)
-        const allAssignedOperatorIds = Array.from(currentlyAssignedOperators.keys());
+        // Need a NEW operator:
+        // Exclude currently simulated and exclude last (to force a change if last existed)
+        const unavailable = new Set(currentlySimulatedIds);
+        if (lastAssignment?.operatorId) unavailable.add(lastAssignment.operatorId);
 
-        // Filter out operators that are currently assigned anywhere
-        const availableOperators = filteredOperators.filter(
-          op => !allAssignedOperatorIds.includes(op.code)
-        );
+        // DB filter for range + occupancy, then JS filter for "startsWith('1')"
+        const poolDb = await operatorsCollection.find(
+          { code: { $lt: 500000, $nin: Array.from(unavailable) } },
+          { projection: { _id: 0, code: 1 } }
+        ).toArray();
 
-        // Remove last operator from available if present (to force new)
-        if (lastAssignment) {
-          const idx = availableOperators.findIndex(op => op.code === lastAssignment.operatorId);
-          if (idx !== -1) availableOperators.splice(idx, 1);
-        }
+        const pool = poolDb.filter(op => String(op.code).startsWith('1'));
 
-        if (availableOperators.length > 0) {
-          // Pick random available operator
-          candidateOperator = availableOperators[Math.floor(Math.random() * availableOperators.length)];
-        } else if (lastAssignment) {
-          // Emergency fallback: reuse last operator even if assigned elsewhere
-          candidateOperator = filteredOperators.find(op => op.code === lastAssignment.operatorId);
+        if (pool.length > 0) {
+          candidateOperator = pool[Math.floor(Math.random() * pool.length)];
+        } else if (lastAssignment?.operatorId && String(lastAssignment.operatorId).startsWith('1')) {
+          // fallback: reuse last if no one else is available and last fits your rule
+          candidateOperator = { code: lastAssignment.operatorId };
           useLast = true;
-          console.log(`[${this.getTimestamp()}] ⚠️ Emergency fallback: reusing operator ${lastAssignment.operatorId} despite conflicts`);
         }
       }
 
-      // Final fallback: use any operator if still no candidate
-      if (!candidateOperator && filteredOperators.length > 0) {
-        candidateOperator = filteredOperators[station % filteredOperators.length];
-        console.log(`[${this.getTimestamp()}] ⚠️ Final fallback: using operator ${candidateOperator.code} for station ${station}`);
-      }
-
-      // Assign operator with atomic upsert to prevent race conditions
+      // Upsert into ticker (atomic). Handle dup key by a quick fallback.
       if (candidateOperator) {
         try {
           // Use findOneAndUpdate with upsert for atomic operation
           const result = await tickerCollection.findOneAndUpdate(
             {
               $or: [
-                { operatorId: candidateOperator.code },
-                { machineSerial: machineSerial, station: station }
+                { operatorId: candidateOperator.code },                   // operator held elsewhere
+                { machineSerial: machineSerial, station: station }       // this station already held
               ]
             },
             {
@@ -206,18 +191,26 @@ class MachineSimulator {
           );
 
           // Update our local tracking
-          currentlyAssignedOperators.set(candidateOperator.code, {
-            machineSerial: machineSerial,
-            station: station
-          });
-
+          currentlySimulatedIds.push(candidateOperator.code);
           assignedOperators.push({ id: candidateOperator.code, station });
-          console.log(`[${this.getTimestamp()}] 👤 Assigned operator ${candidateOperator.code} to station ${station} on machine ${machineSerial}${useLast ? ' (reused)' : ' (new)'}`);
+          console.log(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.code} to station ${station} on machine ${machineSerial}`);
 
         } catch (error) {
-          console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.code} to station ${station}:`, error.message);
-          // Fallback to dummy operator
-          assignedOperators.push({ id: -1, station });
+          if (error.code === 11000) {
+            // Someone else grabbed it—pick a different one once
+            console.warn(`[${this.getTimestamp()}] ⚠️ Duplicate operator ${candidateOperator.code}; selecting another`);
+            const altPoolDb = await operatorsCollection.find(
+              { code: { $lt: 500000, $nin: currentlySimulatedIds } },
+              { projection: { _id: 0, code: 1 } }
+            ).toArray();
+            const altPool = altPoolDb.filter(op => String(op.code).startsWith('1'));
+            const alt = altPool.find(op => op.code !== (lastAssignment?.operatorId ?? -1));
+            assignedOperators.push({ id: alt ? alt.code : -1, station });
+          } else {
+            console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.code} to station ${station}:`, error.message);
+            // Fallback to dummy operator
+            assignedOperators.push({ id: -1, station });
+          }
         }
       } else {
         // Fallback: dummy operator
@@ -225,14 +218,6 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] ⚠️ No operator available for station ${station}, using dummy operator`);
       }
     }
-
-    // For inactive stations, assign dummy or -1 as before
-    // For inactive stations, assign -1 (no operator)
-    // for (let station = 1; station <= machineLanes; station++) {
-    //   if (!activeStations.includes(station)) {
-    //     assignedOperators.push({ id: -1, station });
-    //   }
-    // }
 
     // Sort by station
     assignedOperators.sort((a, b) => a.station - b.station);
@@ -289,29 +274,23 @@ class MachineSimulator {
     if (stateType === "Timeout" || stateType === "Fault") {
       this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
       this.countTimeouts.clear();
-      this.currentRunningState = null;
-
-      // Clean up operator assignments when machine stops running
-      await this.cleanupOperatorAssignments();
+       if (stateType === "Timeout") {
+           this.inSession = false;                 // end of session happens on Timeout
+         }
+      // Don't clear currentRunningState or cleanup operators - preserve session state
     }
 
     let record;
 
     if (stateType === "Running") {
-      // Use new operator assignment logic for Running state
-      const assignedOperators = await this.assignOperatorsForRunningState();
-
-      // Build state record with assigned operators
-      const statusMap = {
-        Timeout: { code: 0, name: "Timeout", softrolColor: "Grey" },
-        Running: { code: 1, name: "Run", softrolColor: "Green" },
-        Fault: { code: 0, name: "Fault", softrolColor: "Red" } // Will be overridden with actual fault code
-      };
-      const status = statusMap[stateType];
-
+      const isNewSession = !this.inSession;     // new session if we were not in-session
+      const assignedOperators = isNewSession
+        ? await this.assignOperatorsForRunningState()    // 98/2, per station, only here
+        : this.currentRunningState.operators;            // keep same operators within the session
+      
+        this.inSession = true;                    // now we are in-session
+      // Build Running record with assigned operators
       const targetConfig = this.machineConfig;
-
-      // Use current item for all stations
       const items = {};
       const maxStations = targetConfig.lanes || 1;
       for (let i = 0; i < maxStations; i++) {
@@ -338,18 +317,38 @@ class MachineSimulator {
           items
         },
         operators: assignedOperators,
-        status
+        status: { code: 1, name: "Run", softrolColor: "Green" }
       };
     } else {
-      // Use updated buildStateRecord function for Timeout and Fault states
-      const db = this.client.db(this.dbName);
-      record = await require('./utils').buildStateRecord(db, stateType, this.machineConfig);
+      // Fault/Timeout reuse operators + program/items from last Running
+      const prev = this.currentRunningState;
+      const targetConfig = this.machineConfig;
+      const status = stateType === "Fault"
+        ? (() => { 
+            const f = this.getRandomFault(); 
+            return { code: f.code, name: f.name, softrolColor: "Red" }; 
+          })()
+        : { code: 0, name: "Timeout", softrolColor: "Grey" };
 
-      if (stateType === "Fault") {
-        const fault = this.getRandomFault();
-        record.status.code = fault.code;
-        record.status.name = fault.name;
-      }
+      record = {
+        timestamp: new Date(),
+        machine: {
+          serial: targetConfig.serial,
+          name: targetConfig.name,
+          ipAddress: targetConfig.ipAddress
+        },
+        program: prev?.program ?? {
+          mode: "smallPiece",
+          programNumber: 1,
+          batchNumber: Math.floor(Math.random() * 21) + 20,
+          accountNumber: 0,
+          speed: 0,
+          stations: targetConfig.lanes,
+          items: Object.fromEntries(Array.from({ length: targetConfig.lanes || 1 }, (_, i) => [String(i), { id: 26, count: 0 }]))
+        },
+        operators: prev?.operators ?? [],
+        status
+      };
     }
 
     const db = this.client.db(this.dbName);
@@ -374,7 +373,7 @@ class MachineSimulator {
     );
 
     if (stateType === "Running") {
-      this.currentRunningState = record;
+      this.currentRunningState = record;                // only update on Running
       record.operators.forEach((op) => {
         if (require('./utils').isValidOperatorId(op.id)) {
           this.simulateStationCounts(record, op.station, op);
@@ -408,6 +407,10 @@ class MachineSimulator {
     this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.countTimeouts.clear();
     this.isRunning = false;
+    
+    // Clean up operator assignments when simulator stops
+    await this.cleanupOperatorAssignments();
+    
     await this.client?.close();
     console.log(`[${this.getTimestamp()}] 🛑 Simulator stopped`);
   }
@@ -508,3 +511,6 @@ if (require.main === module) {
 
   startWorker().catch(console.error);
 }
+
+
+
