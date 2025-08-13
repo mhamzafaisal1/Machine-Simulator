@@ -34,6 +34,10 @@ class MachineSimulator {
     // Session tracking properties
     this.currentSessionId = null;
     this.currentSessionStartTime = null;
+    
+    // Operator session tracking maps
+    this.operatorSessionIdsByOperator = new Map();   // operatorId -> ObjectId
+    this.operatorSessionIdsByStation = new Map();    // station -> ObjectId (safer for SPF)
   }
 
   async start() {
@@ -330,6 +334,62 @@ class MachineSimulator {
     }
   }
 
+  async startOperatorSessions(runningState) {
+    try {
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.operatorSessionCollectionName);
+
+      // Shape items exactly like machine-session
+      const currentItems = (this.machineConfig.type === 'SPF')
+        ? Array.from({ length: 4 }, () => ({ 
+            id: this.currentItem.number, 
+            name: this.currentItem.name, 
+            standard: this.currentItem.standard 
+          }))
+        : [{ 
+            id: this.currentItem.number, 
+            name: this.currentItem.name, 
+            standard: this.currentItem.standard 
+          }];
+
+      this.operatorSessionIdsByOperator.clear();
+      this.operatorSessionIdsByStation.clear();
+
+      for (const op of runningState.operators) {
+        // Skip dummy operators
+        if (op.id === -1) continue;
+
+        const opDoc = {
+          timestamps: { start: runningState.timestamp },
+          counts: [],
+          misfeeds: [],
+          states: [runningState],
+          items: currentItems,
+          operator: op,
+          startState: runningState,
+          machine: runningState.machine,
+          program: runningState.program,
+
+          runtime: 0,
+          workTime: 0,
+          totalCount: 0,
+          misfeedCount: 0,
+          totalCountByItem: currentItems.map(() => 0),
+          timeCreditByItem: currentItems.map(() => 0),
+          totalTimeCredit: 0,
+        };
+
+        const res = await coll.insertOne(opDoc);
+        this.operatorSessionIdsByOperator.set(op.id, res.insertedId);
+        this.operatorSessionIdsByStation.set(op.station, res.insertedId);
+        
+        console.log(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
+      }
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error starting operator sessions:`, error.message);
+    }
+  }
+
   async updateSessionStats(sessionId = this.currentSessionId) {
     if (!sessionId) return;
     
@@ -443,6 +503,62 @@ class MachineSimulator {
     }
   }
 
+  async recalculateOperatorSession(sessionId) {
+    try {
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.operatorSessionCollectionName);
+      const s = await coll.findOne({ _id: sessionId });
+      if (!s) return;
+
+      const start = DateTime.fromJSDate(s.timestamps.start);
+      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      const runtime = end.diff(start, 'seconds').seconds;
+
+      // Per-operator workTime == runtime (single operator)
+      const workTime = runtime;
+
+      const totalCount = s.counts.length;
+      const misfeedCount = s.misfeeds.length;
+
+      // Build arrays aligned to s.items order
+      const byItem = s.items.map((it) => {
+        const countTotal = s.counts.reduce((acc, c) => acc + (c.item?.id === it.id ? 1 : 0), 0);
+        const pph = this.normalizePPH(Number(it.standard) || 0);
+        const tci = pph > 0 ? countTotal / (pph / 3600) : 0;
+        return { countTotal, tci };
+      });
+
+      const totalCountByItem = byItem.map(x => x.countTotal);
+      const timeCreditByItem = byItem.map(x => Number(x.tci.toFixed(2)));
+      const totalTimeCredit = Number(byItem.reduce((a, x) => a + x.tci, 0).toFixed(2));
+
+      await coll.updateOne(
+        { _id: sessionId },
+        { $set: {
+            runtime: Math.round(runtime),
+            workTime: Math.round(workTime),
+            totalCount,
+            misfeedCount,
+            totalCountByItem,
+            timeCreditByItem,
+            totalTimeCredit
+          }
+        }
+      );
+
+      console.log(`[${this.getTimestamp()}] 📊 Updated operator session ${sessionId} stats: runtime=${Math.round(runtime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${totalTimeCredit}s`);
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error recalculating operator session stats:`, error.message);
+    }
+  }
+
+  // Helper method for PPM to PPH normalization
+  normalizePPH(std) {
+    const n = Number(std) || 0;
+    return n < 60 ? n * 60 : n; // treat <60 as PPM => convert to PPH
+  }
+
   async endMachineSession(endState) {
     if (!this.currentSessionId) return;
     
@@ -476,6 +592,35 @@ class MachineSimulator {
       
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending machine session:`, error.message);
+    }
+  }
+
+  async endOperatorSessions(endState) {
+    try {
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.operatorSessionCollectionName);
+
+      for (const [_, opSessionId] of this.operatorSessionIdsByStation) {
+        await coll.updateOne(
+          { _id: opSessionId },
+          {
+            $set: {
+              'timestamps.end': endState.timestamp,
+              endState: endState
+            },
+            $push: { states: endState }
+          }
+        );
+        await this.recalculateOperatorSession(opSessionId);
+      }
+
+      this.operatorSessionIdsByOperator.clear();
+      this.operatorSessionIdsByStation.clear();
+      
+      console.log(`[${this.getTimestamp()}] 🛑 Ended all operator sessions for machine ${this.machineConfig.name}`);
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error ending operator sessions:`, error.message);
     }
   }
 
@@ -561,6 +706,7 @@ class MachineSimulator {
       // Start new machine session if this is a new session
       if (isNewSession) {
         await this.startMachineSession(record);
+        await this.startOperatorSessions(record);
       }
     } else {
       // Fault/Timeout reuse operators + program/items from last Running
@@ -596,6 +742,7 @@ class MachineSimulator {
       // End machine session on Fault or Timeout
       if (this.currentSessionId) {
         await this.endMachineSession(record);
+        await this.endOperatorSessions(record);
       }
     }
 
@@ -665,6 +812,7 @@ class MachineSimulator {
           status: { code: 0, name: "Stopped", softrolColor: "Grey" }
         };
         await this.endMachineSession(endState);
+        await this.endOperatorSessions(endState);
       } catch (error) {
         console.error(`[${this.getTimestamp()}] ❌ Error ending session on stop:`, error.message);
       }
@@ -750,6 +898,24 @@ class MachineSimulator {
             
           } catch (sessionError) {
             console.error(`[${this.getTimestamp()}] ❌ Error updating session with count:`, sessionError.message);
+          }
+        }
+
+        // Update operator session with new count/misfeed
+        const opSessionId = this.operatorSessionIdsByOperator.get(operator.id) ?? 
+                           this.operatorSessionIdsByStation.get(station);
+
+        if (opSessionId) {
+          try {
+            const opSess = db.collection(config.operatorSessionCollectionName);
+            if (isMisfeed) {
+              await opSess.updateOne({ _id: opSessionId }, { $push: { misfeeds: countRecord } });
+            } else {
+              await opSess.updateOne({ _id: opSessionId }, { $push: { counts: countRecord } });
+            }
+            await this.recalculateOperatorSession(opSessionId);
+          } catch (opSessionError) {
+            console.error(`[${this.getTimestamp()}] ❌ Error updating operator session with count:`, opSessionError.message);
           }
         }
 
