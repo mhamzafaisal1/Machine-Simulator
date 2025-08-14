@@ -31,10 +31,10 @@ class MachineSimulator {
     this.collectionName = config.collectionName;
     this.countCollectionName = config.countCollectionName;
     this.inSession = false;
-        // Session tracking properties
+    // Session tracking properties
     this.currentSessionId = null;
     this.currentSessionStartTime = null;
-    
+
     // Operator session tracking maps
     this.operatorSessionIdsByOperator = new Map();   // operatorId -> ObjectId
     this.operatorSessionIdsByStation = new Map();    // station -> ObjectId (safer for SPF)
@@ -55,21 +55,21 @@ class MachineSimulator {
       }
       console.log(`[${this.getTimestamp()}] ⚠️ currentItem is null, calling selectInitialItem() to fix`);
       this.selectInitialItem();
-      
+
       // Verify the fix worked
       if (!this.currentItem) {
         throw new Error('Failed to set currentItem after calling selectInitialItem()');
       }
       console.log(`[${this.getTimestamp()}] ✅ currentItem fixed: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
     }
-    
+
     // For SPF machines, also ensure currentItems array is properly maintained
     if (this.isSpf()) {
       if (!this.currentItems || this.currentItems.length === 0) {
         console.log(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
         this.currentItems = [this.currentItem, this.currentItem, this.currentItem, this.currentItem];
       }
-      
+
       // Validate that we have exactly 4 items for SPF
       if (this.currentItems.length !== 4) {
         console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
@@ -82,13 +82,14 @@ class MachineSimulator {
   buildCurrentItemsArray() {
     this.ensureCurrentItem();
     const it = this.currentItem;
-    
+
     // Double-check that we have a valid item
     if (!it || !it.number || !it.name || it.standard === undefined) {
       throw new Error('Current item is invalid or missing required fields');
     }
-    
+
     const make = () => ({ id: it.number, name: it.name, standard: it.standard });
+    const formatItem = (item) => ({ id: item.number, name: item.name, standard: item.standard });
 
     // Use the isSpf() method for consistency
     const isSPF = this.isSpf();
@@ -97,16 +98,16 @@ class MachineSimulator {
       // For SPF machines, also ensure currentItems array is properly maintained
       if (!this.currentItems || this.currentItems.length === 0) {
         console.log(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
-        this.currentItems = [it, it, it, it]; // Create 4 copies for SPF
+        this.currentItems = this.pickDistinct(this.items, 4); // Create 4 copies for SPF
       }
-      
+
       // Validate that we have exactly 4 items for SPF
       if (this.currentItems.length !== 4) {
         console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
         this.currentItems = [it, it, it, it];
       }
-      
-      return [make(), make(), make(), make()];
+
+      return [formatItem(this.currentItems[0]), formatItem(this.currentItems[1]), formatItem(this.currentItems[2]), formatItem(this.currentItems[3])];
     } else {
       return [make()];
     }
@@ -117,17 +118,17 @@ class MachineSimulator {
     if (!items || items.length === 0) {
       throw new Error('No items available for selection');
     }
-    
+
     if (items.length < n) {
       console.warn(`[${this.getTimestamp()}] ⚠️ Only ${items.length} items available, but ${n} requested. Will use available items.`);
     }
-    
+
     const copy = [...items];
     for (let i = copy.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [copy[i], copy[j]] = [copy[j], copy[i]];
     }
-    return copy.slice(0, Math.min(n, copy.length));    
+    return copy.slice(0, Math.min(n, copy.length));
   }
 
   async start() {
@@ -139,18 +140,18 @@ class MachineSimulator {
       await this.loadFaults();
       await this.loadItems();
       console.log(`[${this.getTimestamp()}] 📦 Loaded ${this.items.length} items`);
-      
+
       // Validate that we have enough items for SPF machines
       if (this.isSpf() && this.items.length < 4) {
         console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine requires at least 4 items, but only ${this.items.length} are available`);
       }
-      
+
       this.selectInitialItem();
       console.log(`[${this.getTimestamp()}] 🎯 Initial item selection complete - currentItem: ${this.currentItem ? this.currentItem.name : 'null'}, isSPF: ${this.isSpf()}`);
-      
+
       // Assign operators before starting simulation loop to ensure first state has operators
       await this.assignInitialOperators();
-      
+
       this.isRunning = true;
       await this.simulationLoop();
     } catch (error) {
@@ -188,7 +189,7 @@ class MachineSimulator {
       this.currentItem = this.currentItems[0];
       console.log(`[${this.getTimestamp()}] 🎯 SPF initial items: ${this.currentItems.map(i => i.name).join(', ')}`);
       console.log(`[${this.getTimestamp()}] 🎯 SPF currentItem set to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
-      
+
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
         console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4`);
@@ -217,14 +218,14 @@ class MachineSimulator {
       }
       return;
     }
-    
+
     if (this.isSpf()) {
       this.currentItems = this.pickDistinct(this.items, 4);
       // For SPF machines, also update currentItem to the first item for session compatibility
       this.currentItem = this.currentItems[0];
       console.log(`[${this.getTimestamp()}] 🔁 SPF new items: ${this.currentItems.map(i => i.name).join(', ')}`);
       console.log(`[${this.getTimestamp()}] 🔁 SPF currentItem updated to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
-      
+
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
         console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4 after item change`);
@@ -396,18 +397,18 @@ class MachineSimulator {
     try {
       const db = this.client.db(this.dbName);
       const sessionCollection = db.collection(config.machineSessionCollectionName);
-      
+
       // Add explicit logging to verify SPF initialization
       console.log(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
-      
+
       // Use the new helper method to build current items array
       const currentItems = this.buildCurrentItemsArray();
-      
+
       // Ensure we have valid items before proceeding
       if (!currentItems || currentItems.length === 0) {
         throw new Error('No valid items available for session; cannot start machine session');
       }
-      
+
       // Get operator details with names
       const operatorsWithNames = [];
       for (const operator of runningState.operators) {
@@ -426,7 +427,7 @@ class MachineSimulator {
           });
         }
       }
-      
+
       // Create initial session object
       const sessionData = {
         timestamps: {
@@ -451,14 +452,14 @@ class MachineSimulator {
         totalByItem: currentItems.map(() => 0),
         timeCreditByItem: currentItems.map(() => 0)
       };
-      
+
       // Insert session into database
       const result = await sessionCollection.insertOne(sessionData);
       this.currentSessionId = result.insertedId;
       this.currentSessionStartTime = runningState.timestamp;
-      
+
       console.log(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting machine session:`, error.message);
       this.currentSessionId = null;
@@ -472,7 +473,7 @@ class MachineSimulator {
       if (!config.operatorSessionCollectionName) {
         throw new Error('config.operatorSessionCollectionName is not set');
       }
-      
+
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
@@ -517,7 +518,7 @@ class MachineSimulator {
         const res = await coll.insertOne(opDoc);
         this.operatorSessionIdsByOperator.set(op.id, res.insertedId);
         this.operatorSessionIdsByStation.set(op.station, res.insertedId);
-        
+
         console.log(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
       }
     } catch (error) {
@@ -527,48 +528,48 @@ class MachineSimulator {
 
   async updateSessionStats(sessionId = this.currentSessionId) {
     if (!sessionId) return;
-    
+
     try {
       const db = this.client.db(this.dbName);
       const sessionCollection = db.collection(config.machineSessionCollectionName);
-      
+
       // Get current session
       const session = await sessionCollection.findOne({ _id: sessionId });
       if (!session) {
         console.warn(`[${this.getTimestamp()}] ⚠️ Session ${sessionId} not found for stats update`);
         return;
       }
-      
+
       // Calculate end time (use current time for active sessions, or session end time for completed)
       const endTime = session.timestamps.end || new Date();
       const startTime = DateTime.fromJSDate(session.timestamps.start);
       const endDateTime = DateTime.fromJSDate(endTime);
-      
+
       // Calculate runtime in seconds
       const runtime = endDateTime.diff(startTime, 'seconds').seconds;
-      
+
       // Calculate work time (runtime * active stations)
       // Don't count dummy operators as "active stations" in machine-session stats
       const activeStations = Array.isArray(session.operators)
         ? session.operators.filter(op => op && op.id !== -1).length
         : 0;
       const workTime = runtime * activeStations;
-      
+
       // Calculate total counts
       const totalCount = session.counts.length;
       const misfeedCount = session.misfeeds.length;
-      
+
       // Time-credit normalization (PPM→PPH)
       const normalizePPH = (std) => {
         const n = Number(std) || 0;
         return n < 60 ? n * 60 : n; // treat <60 as PPM => convert to PPH
       };
-      
+
       // Calculate total time credit and per-item breakdowns
       let totalTimeCredit = 0;
       const totalByItem = [];
       const timeCreditByItem = [];
-      
+
       if (session.items.length === 1) {
         // Single item type - simple calculation
         const item = session.items[0];
@@ -584,7 +585,7 @@ class MachineSimulator {
       } else {
         // Multiple item types - calculate per item type
         const itemTypeCounts = {};
-        
+
         // Group counts by item type
         for (const count of session.counts) {
           const itemId = count.item?.id;
@@ -592,14 +593,14 @@ class MachineSimulator {
             itemTypeCounts[itemId] = (itemTypeCounts[itemId] || 0) + 1;
           }
         }
-        
+
         // Calculate totals and time credits for each item in the session items array
         for (const item of session.items) {
           const countTotal = itemTypeCounts[item.id] || 0;
           const pph = normalizePPH(item.standard);
-          
+
           totalByItem.push(countTotal);
-          
+
           if (pph > 0) {
             const itemTimeCredit = countTotal / (pph / 3600);
             timeCreditByItem.push(itemTimeCredit);
@@ -609,7 +610,7 @@ class MachineSimulator {
           }
         }
       }
-      
+
       // Update session with calculated stats
       const updateData = {
         activeStations,
@@ -621,20 +622,20 @@ class MachineSimulator {
         totalByItem,
         timeCreditByItem
       };
-      
+
       // If session is completed, also update end timestamp
       if (session.timestamps.end) {
         updateData['timestamps.end'] = session.timestamps.end;
         updateData['endState'] = session.endState;
       }
-      
+
       await sessionCollection.updateOne(
         { _id: sessionId },
         { $set: updateData }
       );
-      
+
       console.log(`[${this.getTimestamp()}] 📊 Updated session ${sessionId} stats: runtime=${Math.round(runtime)}s, workTime=${Math.round(workTime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${Number(totalTimeCredit.toFixed(2))}s`);
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error updating session stats:`, error.message);
     }
@@ -671,7 +672,8 @@ class MachineSimulator {
 
       await coll.updateOne(
         { _id: sessionId },
-        { $set: {
+        {
+          $set: {
             runtime: Math.round(runtime),
             workTime: Math.round(workTime),
             totalCount,
@@ -684,7 +686,7 @@ class MachineSimulator {
       );
 
       console.log(`[${this.getTimestamp()}] 📊 Updated operator session ${sessionId} stats: runtime=${Math.round(runtime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${totalTimeCredit}s`);
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating operator session stats:`, error.message);
     }
@@ -698,11 +700,11 @@ class MachineSimulator {
 
   async endMachineSession(endState) {
     if (!this.currentSessionId) return;
-    
+
     try {
       const db = this.client.db(this.dbName);
       const sessionCollection = db.collection(config.machineSessionCollectionName);
-      
+
       // Update session with end information
       await sessionCollection.updateOne(
         { _id: this.currentSessionId },
@@ -716,17 +718,17 @@ class MachineSimulator {
           }
         }
       );
-      
+
       // Run final stats calculation
       await this.updateSessionStats();
-      
+
       console.log(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
-      
+
       // Reset session tracking
       this.currentSessionId = null;
       this.currentSessionStartTime = null;
       this.inSession = false; // Ensure flag is always consistent
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending machine session:`, error.message);
     }
@@ -753,9 +755,9 @@ class MachineSimulator {
 
       this.operatorSessionIdsByOperator.clear();
       this.operatorSessionIdsByStation.clear();
-      
+
       console.log(`[${this.getTimestamp()}] 🛑 Ended all operator sessions for machine ${this.machineConfig.name}`);
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending operator sessions:`, error.message);
     }
@@ -764,7 +766,7 @@ class MachineSimulator {
   async writeOperatorStateRecords(record) {
     try {
       const db = this.client.db(this.dbName);
-      
+
       // Write operator-specific records to all operator collections
       if (record.operators && record.operators.length > 0) {
         for (const operator of record.operators) {
@@ -774,10 +776,10 @@ class MachineSimulator {
               ...record,
               operators: [operator] // Single operator instead of array
             };
-            
+
             // Write to main operator collection
             await db.collection(config.stateOperatorCollectionName).insertOne(operatorRecord);
-            
+
             // Write to additional operator collections
             await db.collection(config.stateOperatorDailyCollectionName).insertOne(operatorRecord);
             await db.collection(config.stateOperatorWeeklyCollectionName).insertOne(operatorRecord);
@@ -807,20 +809,20 @@ class MachineSimulator {
       const assignedOperators = isNewSession
         ? await this.assignOperatorsForRunningState()    // 98/2, per station, only here
         : this.currentRunningState.operators;            // keep same operators within the session
-      
+
       // Add logging after operator assignment
       console.log(`[${this.getTimestamp()}] assignedOperators=${JSON.stringify(assignedOperators)}`);
-      
+
       this.inSession = true;                    // now we are in-session
       // Build Running record with assigned operators
       const targetConfig = this.machineConfig;
-      
+
       // Build items array with correct cardinality
       let itemsArr;
       if (this.isSpf()) {
         // exactly four entries (or fewer if DB has <4)
         itemsArr = this.currentItems.map(i => ({ id: i.number, count: 0 }));
-        while (itemsArr.length < 4) itemsArr.push({ id: this.currentItems[0].number, count: 0 }); // pad to 4 if needed
+        //while (itemsArr.length < 4) itemsArr.push({ id: this.currentItems[0].number, count: 0 }); // pad to 4 if needed
       } else {
         // exactly one entry for all non-SPF machines
         itemsArr = [{ id: this.currentItem.number, count: 0 }];
@@ -845,7 +847,7 @@ class MachineSimulator {
         operators: assignedOperators,
         status: { code: 1, name: "Run", softrolColor: "Green" }
       };
-      
+
       // Start new machine session if this is a new session
       if (isNewSession) {
         await this.startMachineSession(record);
@@ -856,10 +858,10 @@ class MachineSimulator {
       const prev = this.currentRunningState;
       const targetConfig = this.machineConfig;
       const status = stateType === "Fault"
-        ? (() => { 
-            const f = this.getRandomFault(); 
-            return { code: f.code, name: f.name, softrolColor: "Red" }; 
-          })()
+        ? (() => {
+          const f = this.getRandomFault();
+          return { code: f.code, name: f.name, softrolColor: "Red" };
+        })()
         : { code: 0, name: "Timeout", softrolColor: "Grey" };
 
       record = {
@@ -883,7 +885,7 @@ class MachineSimulator {
         operators: prev?.operators ?? [],
         status
       };
-      
+
       // End machine session on Fault or Timeout
       if (this.currentSessionId) {
         await this.endMachineSession(record);
@@ -947,7 +949,7 @@ class MachineSimulator {
     this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.countTimeouts.clear();
     this.isRunning = false;
-    
+
     // End current session if one is active
     if (this.currentSessionId) {
       try {
@@ -962,10 +964,10 @@ class MachineSimulator {
         console.error(`[${this.getTimestamp()}] ❌ Error ending session on stop:`, error.message);
       }
     }
-    
+
     // Clean up operator assignments when simulator stops
     await this.cleanupOperatorAssignments();
-    
+
     await this.client?.close();
     console.log(`[${this.getTimestamp()}] 🛑 Simulator stopped`);
   }
@@ -973,12 +975,13 @@ class MachineSimulator {
   simulateStationCounts(runningState, station, operator) {
     // Choose the correct item for this station
     const itemForThisStation = this.isSpf()
-      ? this.currentItems[(Math.max(1, station) - 1) % Math.max(1, this.currentItems.length || 1)]
+      //? this.currentItems[(Math.max(1, station) - 1) % Math.max(1, this.currentItems.length || 1)]
+      ? this.currentItems[Math.floor(Math.random() * 4)]
       : this.currentItem;
-    
+
     // Calculate timing based on current item
-    const timing = calculateItemTiming(itemForThisStation);
-    const delayMs = (Math.floor(Math.random() * (timing.highRange - timing.lowRange + 1)) + timing.lowRange) * 1000;
+    let timing = calculateItemTiming(itemForThisStation);
+    let delayMs = (Math.floor(Math.random() * (timing.highRange - timing.lowRange + 1)) + timing.lowRange) * 1000;
 
     const timeout = setTimeout(async () => {
       try {
@@ -1003,11 +1006,22 @@ class MachineSimulator {
 
         if (!isMisfeed) {
           // Include current item information
-          countRecord.item = {
-            id: itemForThisStation.number,
-            name: itemForThisStation.name,
-            standard: itemForThisStation.standard
-          };
+          if (this.isSpf()) {
+            countRecord.item = {
+              id: this.currentItems[Math.floor(Math.random() * 4)].number,
+              name: this.currentItems[Math.floor(Math.random() * 4)].name,
+              standard: this.currentItems[Math.floor(Math.random() * 4)].standard
+            };
+            timing = calculateItemTiming(itemForThisStation);
+            delayMs = (Math.floor(Math.random() * (timing.highRange - timing.lowRange + 1)) + timing.lowRange) * 1000;
+          } else {
+            countRecord.item = {
+              id: itemForThisStation.number,
+              name: itemForThisStation.name,
+              standard: itemForThisStation.standard
+            };
+          }
+
         } else {
           countRecord.misfeed = true;
         }
@@ -1022,14 +1036,14 @@ class MachineSimulator {
 
         await db.collection(config.stateTickerCollectionName).updateOne(
           { "machine.serial": countRecord.machine.serial },
-          { $set: {timestamp: new Date() } }
+          { $set: { timestamp: new Date() } }
         );
 
         // Update machine session with new count/misfeed
         if (this.currentSessionId) {
           try {
             const sessionCollection = db.collection(config.machineSessionCollectionName);
-            
+
             if (isMisfeed) {
               // Add misfeed to session
               await sessionCollection.updateOne(
@@ -1043,18 +1057,18 @@ class MachineSimulator {
                 { $push: { counts: countRecord } }
               );
             }
-            
+
             // Recalculate session stats after adding count/misfeed
             await this.updateSessionStats();
-            
+
           } catch (sessionError) {
             console.error(`[${this.getTimestamp()}] ❌ Error updating session with count:`, sessionError.message);
           }
         }
 
         // Update operator session with new count/misfeed
-        const opSessionId = this.operatorSessionIdsByOperator.get(operator.id) ?? 
-                           this.operatorSessionIdsByStation.get(station);
+        const opSessionId = this.operatorSessionIdsByOperator.get(operator.id) ??
+          this.operatorSessionIdsByStation.get(station);
 
         if (opSessionId) {
           try {
