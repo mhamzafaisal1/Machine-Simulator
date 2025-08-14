@@ -42,11 +42,86 @@ class MachineSimulator {
 
   // Helper method to check if machine is SPF
   isSpf() {
-    return String(this.machineConfig.type).toUpperCase() === 'SPF';
+    const type = String(this.machineConfig.type || '').toUpperCase();
+    const name = String(this.machineConfig.name || '').toUpperCase();
+    return type === 'SPF' || name.startsWith('SPF');
+  }
+
+  // Helper method to ensure current item is set before starting sessions
+  ensureCurrentItem() {
+    if (!this.currentItem) {
+      if (!this.items || this.items.length === 0) {
+        throw new Error('No active items loaded; cannot start session');
+      }
+      console.log(`[${this.getTimestamp()}] ⚠️ currentItem is null, calling selectInitialItem() to fix`);
+      this.selectInitialItem();
+      
+      // Verify the fix worked
+      if (!this.currentItem) {
+        throw new Error('Failed to set currentItem after calling selectInitialItem()');
+      }
+      console.log(`[${this.getTimestamp()}] ✅ currentItem fixed: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+    }
+    
+    // For SPF machines, also ensure currentItems array is properly maintained
+    if (this.isSpf()) {
+      if (!this.currentItems || this.currentItems.length === 0) {
+        console.log(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
+        this.currentItems = [this.currentItem, this.currentItem, this.currentItem, this.currentItem];
+      }
+      
+      // Validate that we have exactly 4 items for SPF
+      if (this.currentItems.length !== 4) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
+        this.currentItems = [this.currentItem, this.currentItem, this.currentItem, this.currentItem];
+      }
+    }
+  }
+
+  // Helper method to build current items array for sessions
+  buildCurrentItemsArray() {
+    this.ensureCurrentItem();
+    const it = this.currentItem;
+    
+    // Double-check that we have a valid item
+    if (!it || !it.number || !it.name || it.standard === undefined) {
+      throw new Error('Current item is invalid or missing required fields');
+    }
+    
+    const make = () => ({ id: it.number, name: it.name, standard: it.standard });
+
+    // Use the isSpf() method for consistency
+    const isSPF = this.isSpf();
+
+    if (isSPF) {
+      // For SPF machines, also ensure currentItems array is properly maintained
+      if (!this.currentItems || this.currentItems.length === 0) {
+        console.log(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
+        this.currentItems = [it, it, it, it]; // Create 4 copies for SPF
+      }
+      
+      // Validate that we have exactly 4 items for SPF
+      if (this.currentItems.length !== 4) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
+        this.currentItems = [it, it, it, it];
+      }
+      
+      return [make(), make(), make(), make()];
+    } else {
+      return [make()];
+    }
   }
 
   // Helper method to pick distinct random items
   pickDistinct(items, n) {
+    if (!items || items.length === 0) {
+      throw new Error('No items available for selection');
+    }
+    
+    if (items.length < n) {
+      console.warn(`[${this.getTimestamp()}] ⚠️ Only ${items.length} items available, but ${n} requested. Will use available items.`);
+    }
+    
     const copy = [...items];
     for (let i = copy.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -63,7 +138,15 @@ class MachineSimulator {
       await this.connectToMongoDB();
       await this.loadFaults();
       await this.loadItems();
+      console.log(`[${this.getTimestamp()}] 📦 Loaded ${this.items.length} items`);
+      
+      // Validate that we have enough items for SPF machines
+      if (this.isSpf() && this.items.length < 4) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine requires at least 4 items, but only ${this.items.length} are available`);
+      }
+      
       this.selectInitialItem();
+      console.log(`[${this.getTimestamp()}] 🎯 Initial item selection complete - currentItem: ${this.currentItem ? this.currentItem.name : 'null'}, isSPF: ${this.isSpf()}`);
       
       // Assign operators before starting simulation loop to ensure first state has operators
       await this.assignInitialOperators();
@@ -101,9 +184,18 @@ class MachineSimulator {
   selectInitialItem() {
     if (this.isSpf()) {
       this.currentItems = this.pickDistinct(this.items, 4);  // exactly four
+      // For SPF machines, also set currentItem to the first item for session compatibility
+      this.currentItem = this.currentItems[0];
       console.log(`[${this.getTimestamp()}] 🎯 SPF initial items: ${this.currentItems.map(i => i.name).join(', ')}`);
+      console.log(`[${this.getTimestamp()}] 🎯 SPF currentItem set to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      
+      // Validate that we have the correct number of items for SPF
+      if (this.currentItems.length !== 4) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4`);
+      }
     } else {
       this.currentItem = selectRandomItem(this.items);       // exactly one
+      console.log(`[${this.getTimestamp()}] 🎯 Non-SPF currentItem set to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
     }
   }
 
@@ -128,9 +220,18 @@ class MachineSimulator {
     
     if (this.isSpf()) {
       this.currentItems = this.pickDistinct(this.items, 4);
+      // For SPF machines, also update currentItem to the first item for session compatibility
+      this.currentItem = this.currentItems[0];
       console.log(`[${this.getTimestamp()}] 🔁 SPF new items: ${this.currentItems.map(i => i.name).join(', ')}`);
+      console.log(`[${this.getTimestamp()}] 🔁 SPF currentItem updated to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      
+      // Validate that we have the correct number of items for SPF
+      if (this.currentItems.length !== 4) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4 after item change`);
+      }
     } else {
       this.currentItem = selectRandomItem(this.items);
+      console.log(`[${this.getTimestamp()}] 🔁 Non-SPF currentItem updated to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
     }
   }
 
@@ -296,27 +397,15 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const sessionCollection = db.collection(config.machineSessionCollectionName);
       
-      // Get current items being simulated
-      const currentItems = [];
-      if (this.currentItem) {
-        if (this.machineConfig.type === 'SPF') {
-          // TODO: if/when lanes can run different items, pick 4 distinct defs.
-          // For now, include 4 copies logically representing 4 item definitions.
-          for (let i = 0; i < 4; i++) {
-            currentItems.push({
-              id: this.currentItem.number,
-              name: this.currentItem.name,
-              standard: this.currentItem.standard,
-            });
-          }
-        } else {
-          // Non-SPF → single item definition
-          currentItems.push({
-            id: this.currentItem.number,
-            name: this.currentItem.name,
-            standard: this.currentItem.standard,
-          });
-        }
+      // Add explicit logging to verify SPF initialization
+      console.log(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
+      
+      // Use the new helper method to build current items array
+      const currentItems = this.buildCurrentItemsArray();
+      
+      // Ensure we have valid items before proceeding
+      if (!currentItems || currentItems.length === 0) {
+        throw new Error('No valid items available for session; cannot start machine session');
       }
       
       // Get operator details with names
@@ -379,21 +468,24 @@ class MachineSimulator {
 
   async startOperatorSessions(runningState) {
     try {
+      // Fail fast if operator-session collection name is missing
+      if (!config.operatorSessionCollectionName) {
+        throw new Error('config.operatorSessionCollectionName is not set');
+      }
+      
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
-      // Shape items exactly like machine-session
-      const currentItems = (this.machineConfig.type === 'SPF')
-        ? Array.from({ length: 4 }, () => ({ 
-            id: this.currentItem.number, 
-            name: this.currentItem.name, 
-            standard: this.currentItem.standard 
-          }))
-        : [{ 
-            id: this.currentItem.number, 
-            name: this.currentItem.name, 
-            standard: this.currentItem.standard 
-          }];
+      // Add explicit logging to verify SPF initialization
+      console.log(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
+
+      // Use the new helper method to build current items array
+      const currentItems = this.buildCurrentItemsArray();
+
+      // Ensure we have valid items before proceeding
+      if (!currentItems || currentItems.length === 0) {
+        throw new Error('No valid items available for session; cannot start operator sessions');
+      }
 
       this.operatorSessionIdsByOperator.clear();
       this.operatorSessionIdsByStation.clear();
@@ -456,8 +548,10 @@ class MachineSimulator {
       const runtime = endDateTime.diff(startTime, 'seconds').seconds;
       
       // Calculate work time (runtime * active stations)
-      // const activeStations = session.operators.filter(op => op.id !== -1).length;
-      const activeStations = Array.isArray(session.operators) ? session.operators.length : 0;
+      // Don't count dummy operators as "active stations" in machine-session stats
+      const activeStations = Array.isArray(session.operators)
+        ? session.operators.filter(op => op && op.id !== -1).length
+        : 0;
       const workTime = runtime * activeStations;
       
       // Calculate total counts
@@ -714,7 +808,10 @@ class MachineSimulator {
         ? await this.assignOperatorsForRunningState()    // 98/2, per station, only here
         : this.currentRunningState.operators;            // keep same operators within the session
       
-        this.inSession = true;                    // now we are in-session
+      // Add logging after operator assignment
+      console.log(`[${this.getTimestamp()}] assignedOperators=${JSON.stringify(assignedOperators)}`);
+      
+      this.inSession = true;                    // now we are in-session
       // Build Running record with assigned operators
       const targetConfig = this.machineConfig;
       
