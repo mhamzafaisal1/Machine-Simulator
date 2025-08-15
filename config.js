@@ -18,6 +18,9 @@ module.exports = {
     // Operator session tracking collection
     operatorSessionCollectionName: 'operator-session',
     
+    // Fault session tracking collection
+    faultSessionCollectionName: 'fault-session',
+    
         // Additional collections for state data (same data, multiple collections)
     stateMachineDailyCollectionName: 'state-machine-daily',
     stateMachineWeeklyCollectionName: 'state-machine-weekly',
