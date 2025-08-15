@@ -38,6 +38,8 @@ class MachineSimulator {
     // Operator session tracking maps
     this.operatorSessionIdsByOperator = new Map();   // operatorId -> ObjectId
     this.operatorSessionIdsByStation = new Map();    // station -> ObjectId (safer for SPF)
+    // Item session tracking map
+    this.itemSessionIdsByItem = new Map();           // itemId -> ObjectId
   }
 
   // Helper method to check if machine is SPF
@@ -526,6 +528,54 @@ class MachineSimulator {
     }
   }
 
+  async startItemSessions(runningState) {
+    try {
+      if (!config.itemSessionCollectionName) throw new Error('config.itemSessionCollectionName not set');
+
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.itemSessionCollectionName);
+      this.itemSessionIdsByItem.clear();
+
+      // Build item array per spec: SPF=4 items, non‑SPF=1 item. Always store as array.
+      const items = this.isSpf()
+        ? this.currentItems.map(i => ({ id: i.number, name: i.name, standard: i.standard }))
+        : [{ id: this.currentItem.number, name: this.currentItem.name, standard: this.currentItem.standard }];
+
+      // Operators with names for context
+      const operators = [];
+      for (const op of (runningState.operators || [])) {
+        operators.push({ id: op.id, name: op.id === -1 ? 'None' : await getOperatorName(db, op.id), station: op.station });
+      }
+
+      // One item-session per item, as sessions are item-scoped
+      for (const it of items) {
+        const doc = {
+          timestamps: { start: runningState.timestamp },
+          counts: [],
+          misfeeds: [],
+          states: [runningState],
+          item: it,
+          operators,
+          startState: runningState,
+          machine: runningState.machine,
+          program: runningState.program,
+          // Final fields initialized; activeStations == operators.length per spec
+          activeStations: (operators || []).length,
+          runtime: 0,
+          workTime: 0,
+          totalCount: 0,
+          misfeedCount: 0,
+          totalTimeCredit: 0
+        };
+        const res = await coll.insertOne(doc);
+        this.itemSessionIdsByItem.set(it.id, res.insertedId);
+        console.log(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
+      }
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error starting item sessions:`, error.message);
+    }
+  }
+
   async updateSessionStats(sessionId = this.currentSessionId) {
     if (!sessionId) return;
 
@@ -724,6 +774,9 @@ class MachineSimulator {
 
       console.log(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
 
+      // Also end any item-sessions tied to this machine session
+      await this.endItemSessions(endState);
+
       // Reset session tracking
       this.currentSessionId = null;
       this.currentSessionStartTime = null;
@@ -760,6 +813,72 @@ class MachineSimulator {
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending operator sessions:`, error.message);
+    }
+  }
+
+  async endItemSessions(endState) {
+    try {
+      if (!this.itemSessionIdsByItem || this.itemSessionIdsByItem.size === 0) return;
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.itemSessionCollectionName);
+
+      for (const [_, sessId] of this.itemSessionIdsByItem) {
+        await coll.updateOne(
+          { _id: sessId },
+          {
+            $set: { 'timestamps.end': endState.timestamp, endState },
+            $push: { states: endState }
+          }
+        );
+        await this.recalculateItemSession(sessId);
+      }
+
+      this.itemSessionIdsByItem.clear();
+      console.log(`[${this.getTimestamp()}] 🛑 Ended all item sessions for machine ${this.machineConfig.name}`);
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error ending item sessions:`, error.message);
+    }
+  }
+
+  async recalculateItemSession(sessionId) {
+    try {
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.itemSessionCollectionName);
+      const s = await coll.findOne({ _id: sessionId });
+      if (!s) return;
+
+      const start = DateTime.fromJSDate(s.timestamps.start);
+      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      const runtime = end.diff(start, 'seconds').seconds;
+
+      const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
+      const workTime = runtime * activeStations;
+
+      const itemId = s.item?.id;
+      const totalCount = (s.counts || []).filter(c => c.item?.id === itemId).length;
+      const misfeedCount = (s.misfeeds || []).filter(m => m.item?.id === itemId).length;
+
+      const std = Number(s.item?.standard) || 0;
+      const pph = std < 60 ? std * 60 : std;
+      const totalTimeCredit = pph > 0 ? Number((totalCount / (pph / 3600)).toFixed(2)) : 0;
+
+      await coll.updateOne(
+        { _id: sessionId },
+        {
+          $set: {
+            activeStations,
+            runtime: Math.round(runtime),
+            workTime: Math.round(workTime),
+            totalCount,
+            misfeedCount,
+            totalTimeCredit
+          }
+        }
+      );
+
+      console.log(`[${this.getTimestamp()}] 📊 Recalculated item session ${sessionId}: cnt=${totalCount}, tcredit=${totalTimeCredit}s`);
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error recalculating item session:`, error.message);
     }
   }
 
@@ -852,6 +971,7 @@ class MachineSimulator {
       if (isNewSession) {
         await this.startMachineSession(record);
         await this.startOperatorSessions(record);
+        await this.startItemSessions(record);          // start item-session(s)
       }
     } else {
       // Fault/Timeout reuse operators + program/items from last Running
@@ -960,6 +1080,7 @@ class MachineSimulator {
         };
         await this.endMachineSession(endState);
         await this.endOperatorSessions(endState);
+        // await this.endItemSessions(endState);
       } catch (error) {
         console.error(`[${this.getTimestamp()}] ❌ Error ending session on stop:`, error.message);
       }
@@ -1024,6 +1145,13 @@ class MachineSimulator {
 
         } else {
           countRecord.misfeed = true;
+          // Attach item to misfeed so item-session can account for it
+          if (this.isSpf()) {
+            const it = this.currentItems[Math.floor(Math.random() * 4)];
+            countRecord.item = { id: it.number, name: it.name, standard: it.standard };
+          } else {
+            countRecord.item = { id: itemForThisStation.number, name: itemForThisStation.name, standard: itemForThisStation.standard };
+          }
         }
 
         // Write to main count collection
@@ -1081,6 +1209,25 @@ class MachineSimulator {
             await this.recalculateOperatorSession(opSessionId);
           } catch (opSessionError) {
             console.error(`[${this.getTimestamp()}] ❌ Error updating operator session with count:`, opSessionError.message);
+          }
+        }
+
+        // Update item-session for the specific item id
+        const itemIdForRecord = countRecord.item?.id;
+        if (itemIdForRecord) {
+          const itemSessId = this.itemSessionIdsByItem.get(itemIdForRecord);
+          if (itemSessId) {
+            try {
+              const itemColl = db.collection(config.itemSessionCollectionName);
+              if (isMisfeed) {
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { misfeeds: countRecord } });
+              } else {
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: countRecord } });
+              }
+              await this.recalculateItemSession(itemSessId);
+            } catch (itemSessionError) {
+              console.error(`[${this.getTimestamp()}] ❌ Error updating item session with ${isMisfeed ? 'misfeed' : 'count'}:`, itemSessionError.message);
+            }
           }
         }
 
