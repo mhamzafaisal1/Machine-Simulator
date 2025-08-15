@@ -40,6 +40,8 @@ class MachineSimulator {
     this.operatorSessionIdsByStation = new Map();    // station -> ObjectId (safer for SPF)
     // Item session tracking map
     this.itemSessionIdsByItem = new Map();           // itemId -> ObjectId
+    // Fault session tracking
+    this.currentFaultSessionId = null;               // ObjectId for open fault session
   }
 
   // Helper method to check if machine is SPF
@@ -777,6 +779,11 @@ class MachineSimulator {
       // Also end any item-sessions tied to this machine session
       await this.endItemSessions(endState);
 
+      // If a fault-session is open, end it now
+      if (this.currentFaultSessionId) {
+        await this.endFaultSession(endState);
+      }
+
       // Reset session tracking
       this.currentSessionId = null;
       this.currentSessionStartTime = null;
@@ -967,6 +974,11 @@ class MachineSimulator {
         status: { code: 1, name: "Run", softrolColor: "Green" }
       };
 
+      // If a fault session was open, a transition to Run clears it
+      if (this.currentFaultSessionId) {
+        await this.endFaultSession(record);
+      }
+
       // Start new machine session if this is a new session
       if (isNewSession) {
         await this.startMachineSession(record);
@@ -1011,6 +1023,19 @@ class MachineSimulator {
         await this.endMachineSession(record);
         await this.endOperatorSessions(record);
       }
+
+      // Start or end fault sessions appropriately
+      if (stateType === "Fault") {
+        // Begin a fault-session if none open
+        if (!this.currentFaultSessionId) {
+          await this.startFaultSession(record);
+        }
+      } else if (stateType === "Timeout") {
+        // Clearing a previous fault
+        if (this.currentFaultSessionId) {
+          await this.endFaultSession(record);
+        }
+      }
     }
 
     const db = this.client.db(this.dbName);
@@ -1041,6 +1066,86 @@ class MachineSimulator {
           this.simulateStationCounts(record, op.station, op);
         }
       });
+    }
+  }
+
+  async startFaultSession(startState) {
+    try {
+      if (!config.faultSessionCollectionName) throw new Error('config.faultSessionCollectionName not set');
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.faultSessionCollectionName);
+
+      // Items active when the fault occurred
+      const items = this.buildCurrentItemsArray(); // [{id,name,standard}] x1 or x4
+
+      // Operators active when the fault occurred
+      const ops = [];
+      for (const op of (startState.operators || [])) {
+        ops.push({
+          id: op.id,
+          name: op.id === -1 ? 'None' : await getOperatorName(db, op.id),
+          station: op.station
+        });
+      }
+
+      const doc = {
+        timestamps: { start: startState.timestamp },
+        items,
+        operators: ops,
+        states: [startState],
+        startState,
+        machine: startState.machine,
+        program: startState.program,
+        activeStations: ops.length
+      };
+
+      const res = await coll.insertOne(doc);
+      this.currentFaultSessionId = res.insertedId;
+      console.log(`[${this.getTimestamp()}] 🚨 Started fault session ${res.insertedId}`);
+    } catch (e) {
+      console.error(`[${this.getTimestamp()}] ❌ Error starting fault session:`, e.message);
+    }
+  }
+
+  async endFaultSession(endState) {
+    try {
+      if (!this.currentFaultSessionId) return;
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.faultSessionCollectionName);
+
+      // Push end state and set end timestamp
+      await coll.updateOne(
+        { _id: this.currentFaultSessionId },
+        { $set: { 'timestamps.end': endState.timestamp, endState }, $push: { states: endState } }
+      );
+
+      await this.recalculateFaultSession(this.currentFaultSessionId);
+      console.log(`[${this.getTimestamp()}] ✅ Ended fault session ${this.currentFaultSessionId}`);
+    } catch (e) {
+      console.error(`[${this.getTimestamp()}] ❌ Error ending fault session:`, e.message);
+    } finally {
+      this.currentFaultSessionId = null;
+    }
+  }
+
+  async recalculateFaultSession(sessionId) {
+    try {
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.faultSessionCollectionName);
+      const s = await coll.findOne({ _id: sessionId });
+      if (!s) return;
+      const start = DateTime.fromJSDate(s.timestamps.start);
+      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      const faulttime = end.diff(start, 'seconds').seconds;
+      const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
+      const workTimeMissed = faulttime * activeStations;
+      await coll.updateOne(
+        { _id: sessionId },
+        { $set: { faulttime: Math.round(faulttime), workTimeMissed: Math.round(workTimeMissed), activeStations } }
+      );
+      console.log(`[${this.getTimestamp()}] 🧮 Recalc fault session ${sessionId}: faulttime=${Math.round(faulttime)}s missed=${Math.round(workTimeMissed)}s`);
+    } catch (e) {
+      console.error(`[${this.getTimestamp()}] ❌ Error recalculating fault session:`, e.message);
     }
   }
 
@@ -1084,6 +1189,16 @@ class MachineSimulator {
       } catch (error) {
         console.error(`[${this.getTimestamp()}] ❌ Error ending session on stop:`, error.message);
       }
+    }
+
+    // Always close any open fault-session on stop (even if machine session already ended)
+    if (this.currentFaultSessionId) {
+      const endState = {
+        timestamp: new Date(),
+        machine: this.machineConfig,
+        status: { code: 0, name: "Stopped", softrolColor: "Grey" }
+      };
+      await this.endFaultSession(endState);
     }
 
     // Clean up operator assignments when simulator stops
