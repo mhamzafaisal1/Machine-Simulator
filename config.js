@@ -18,6 +18,9 @@ module.exports = {
     // Operator session tracking collection
     operatorSessionCollectionName: 'operator-session',
     
+    // Item session tracking collection
+    itemSessionCollectionName: 'item-session',
+    
     // Fault session tracking collection
     faultSessionCollectionName: 'fault-session',
     
