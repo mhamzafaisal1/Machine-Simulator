@@ -934,7 +934,7 @@ class MachineSimulator {
       await this.delay(getRandomDelay(2, 75));
       if (!this.isRunning) break;
 
-      const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
+      const nextState = Math.random() < 0.45 ? "Timeout" : "Fault";
       await this.writeState(nextState);
 
       // Select next item when machine stops (before delay)
