@@ -931,7 +931,7 @@ class MachineSimulator {
       if (!this.isRunning) break;
 
       await this.writeState("Running");
-      await this.delay(getRandomDelay(0.75, 5));
+      await this.delay(getRandomDelay(2, 75));
       if (!this.isRunning) break;
 
       const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
