@@ -528,18 +528,6 @@ class MachineSimulator {
     }
   }
 
-  async linkItemSessionsToMachineSession() {
-    try {
-      if (!this.currentSessionId) return;
-      const db = this.client.db(this.dbName);
-      const sessionCollection = db.collection(config.machineSessionCollectionName);
-      const ids = Array.from(this.itemSessionIdsByItem.values());
-      await sessionCollection.updateOne({ _id: this.currentSessionId }, { $set: { itemSessionIds: ids } });
-    } catch (e) {
-      console.error(`[${this.getTimestamp()}] ❌ Error linking item sessions to machine session:`, e.message);
-    }
-  }
-
   async startItemSessions(runningState) {
     try {
       if (!config.itemSessionCollectionName) throw new Error('config.itemSessionCollectionName not set');
@@ -984,7 +972,6 @@ class MachineSimulator {
         await this.startMachineSession(record);
         await this.startOperatorSessions(record);
         await this.startItemSessions(record);          // start item-session(s)
-        await this.linkItemSessionsToMachineSession(); // persist IDs on machine-session
       }
     } else {
       // Fault/Timeout reuse operators + program/items from last Running
