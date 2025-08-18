@@ -1209,7 +1209,7 @@ class MachineSimulator {
   }
 
   simulateStationCounts(runningState, station, operator) {
-    const rateParam = 0.5;
+    const rateParam = 0.85;
     // Choose the correct item for this station
     const itemForThisStation = this.isSpf()
       //? this.currentItems[(Math.max(1, station) - 1) % Math.max(1, this.currentItems.length || 1)]

@@ -214,7 +214,7 @@ function calculateItemTiming(item) {
   
   const secondsPerPiece = 3600 / item.standard;
   const lowRange = secondsPerPiece * 0.75;
-  const highRange = secondsPerPiece * 1.25;
+  const highRange = secondsPerPiece * 1.75;
   
   console.log(`[${new Date().toISOString()}] ⏱️ Item timing - Standard: ${item.standard} pph, Seconds per piece: ${secondsPerPiece.toFixed(2)}, Range: ${lowRange.toFixed(2)}-${highRange.toFixed(2)}s`);
   
