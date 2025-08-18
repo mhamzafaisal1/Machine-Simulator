@@ -1217,7 +1217,7 @@ class MachineSimulator {
 
     // Calculate timing based on current item
     let timing = calculateItemTiming(itemForThisStation);
-    let randomExponential = Math.log(1 - Math.random()) / -5;
+    let randomExponential = Math.log(1 - Math.random()) / -1;
     let delayMs = (randomExponential * (timing.highRange - timing.lowRange)) + timing.lowRange * 1000;
 
     const timeout = setTimeout(async () => {
@@ -1250,7 +1250,7 @@ class MachineSimulator {
               standard: this.currentItems[Math.floor(Math.random() * 4)].standard
             };
             timing = calculateItemTiming(itemForThisStation);
-            let randomExponential = Math.log(1 - Math.random()) / -5;
+            let randomExponential = Math.log(1 - Math.random()) / -1;
             let delayMs = (randomExponential * (timing.highRange - timing.lowRange + 1)) + timing.lowRange * 1000;
           } else {
             countRecord.item = {
