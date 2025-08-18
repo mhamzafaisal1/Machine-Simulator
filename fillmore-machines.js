@@ -50,7 +50,7 @@ async function fetchMachinesFromMongoDB() {
     const collection = db.collection(machineCollectionName);
     
     // Fetch all machines
-    const machines = await collection.find({}).toArray();
+    const machines = await collection.find({active:true}).toArray();
     
     // Transform MongoDB data to match our expected format
     const transformedMachines = machines.map(machine => ({
