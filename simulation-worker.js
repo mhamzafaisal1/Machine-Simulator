@@ -823,6 +823,41 @@ class MachineSimulator {
     }
   }
 
+  async closeOpenOperatorSessions(endState) {
+    try {
+      const db = this.client.db(this.dbName);
+      const coll = db.collection(config.operatorSessionCollectionName);
+
+      const filter = {
+        "machine.serial": this.machineConfig.serial,
+        "timestamps.end": { $exists: false }
+      };
+
+      const openIds = await coll.find(filter, { projection: { _id: 1 } }).toArray();
+      if (!openIds.length) {
+        console.log(`[${this.getTimestamp()}] 🔍 No lingering operator sessions to close for ${this.machineConfig.name}`);
+        return;
+      }
+
+      console.log(`[${this.getTimestamp()}] 🧹 Closing ${openIds.length} lingering operator sessions for ${this.machineConfig.name}`);
+
+      await Promise.all(
+        openIds.map(async ({ _id }) => {
+          await coll.updateOne(
+            { _id },
+            {
+              $set: { "timestamps.end": endState.timestamp, endState },
+              $push: { states: endState }
+            }
+          );
+          await this.recalculateOperatorSession(_id);
+        })
+      );
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error closing lingering operator sessions:`, error.message);
+    }
+  }
+
   async endItemSessions(endState) {
     try {
       if (!this.itemSessionIdsByItem || this.itemSessionIdsByItem.size === 0) return;
@@ -1175,14 +1210,15 @@ class MachineSimulator {
     this.countTimeouts.clear();
     this.isRunning = false;
 
+    const endState = {
+      timestamp: new Date(),
+      machine: this.machineConfig,
+      status: { code: 0, name: "Stopped", softrolColor: "Grey" }
+    };
+
     // End current session if one is active
     if (this.currentSessionId) {
       try {
-        const endState = {
-          timestamp: new Date(),
-          machine: this.machineConfig,
-          status: { code: 0, name: "Stopped", softrolColor: "Grey" }
-        };
         await this.endMachineSession(endState);
         await this.endOperatorSessions(endState);
         // await this.endItemSessions(endState);
@@ -1191,13 +1227,11 @@ class MachineSimulator {
       }
     }
 
+    // Defensive close for any operator-sessions left open in DB
+    await this.closeOpenOperatorSessions(endState);
+
     // Always close any open fault-session on stop (even if machine session already ended)
     if (this.currentFaultSessionId) {
-      const endState = {
-        timestamp: new Date(),
-        machine: this.machineConfig,
-        status: { code: 0, name: "Stopped", softrolColor: "Grey" }
-      };
       await this.endFaultSession(endState);
     }
 
