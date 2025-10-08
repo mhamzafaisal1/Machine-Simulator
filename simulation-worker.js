@@ -14,6 +14,9 @@ const {
   calculateItemTiming
 } = require('./utils');
 const config = require('./config');
+const {
+  recalculateAndUpdateCache
+} = require('./simulator-cache-builder');
 
 class MachineSimulator {
   constructor(machineConfig) {
@@ -42,6 +45,13 @@ class MachineSimulator {
     this.itemSessionIdsByItem = new Map();           // itemId -> ObjectId
     // Fault session tracking
     this.currentFaultSessionId = null;               // ObjectId for open fault session
+    
+    // ⭐ IN-MEMORY CACHE ARRAYS (for real-time cache building without DB polling)
+    this.cachedMachineSessions = [];                  // Machine sessions for today
+    this.cachedFaultSessions = [];                    // Fault sessions for today
+    this.cachedOperatorSessions = new Map();          // operatorId -> session array for today
+    this.cachedItemSessions = new Map();              // itemId -> session array for today
+    this.todayStart = null;                           // Midnight today (for filtering)
   }
 
   // Helper method to check if machine is SPF
@@ -155,6 +165,9 @@ class MachineSimulator {
 
       // Assign operators before starting simulation loop to ensure first state has operators
       await this.assignInitialOperators();
+      
+      // ⭐ Load today's sessions into memory for real-time cache building
+      await this.loadTodaysSessions();
 
       this.isRunning = true;
       await this.simulationLoop();
@@ -184,6 +197,128 @@ class MachineSimulator {
   async loadItems() {
     const db = this.client.db(this.dbName);
     this.items = await loadItems(db);
+  }
+
+  /**
+   * ⭐ Loads today's sessions into memory for real-time cache building
+   * This eliminates the need for database polling by the cacher service
+   */
+  async loadTodaysSessions() {
+    try {
+      console.log(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
+      
+      const db = this.client.db(this.dbName);
+      const machineSerial = this.machineConfig.serial;
+      
+      // Calculate today's start (midnight in America/Chicago timezone)
+      const SYSTEM_TIMEZONE = 'America/Chicago';
+      this.todayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
+      const now = new Date();
+      
+      console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
+      
+      // 1. Load machine sessions for this machine today
+      const machineSessionColl = db.collection(config.machineSessionCollectionName);
+      this.cachedMachineSessions = await machineSessionColl.find({
+        'machine.serial': machineSerial,
+        'timestamps.start': { $gte: this.todayStart }
+      }).sort({ 'timestamps.start': 1 }).toArray();
+      
+      console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
+      
+      // 2. Load fault sessions for this machine today
+      const faultSessionColl = db.collection(config.faultSessionCollectionName);
+      this.cachedFaultSessions = await faultSessionColl.find({
+        'machine.serial': machineSerial,
+        'timestamps.start': { $gte: this.todayStart }
+      }).sort({ 'timestamps.start': 1 }).toArray();
+      
+      console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedFaultSessions.length} fault sessions`);
+      
+      // 3. Load operator sessions for this machine today (group by operator ID)
+      const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
+      const operatorSessions = await operatorSessionColl.find({
+        'machine.serial': machineSerial,
+        'timestamps.start': { $gte: this.todayStart }
+      }).sort({ 'timestamps.start': 1 }).toArray();
+      
+      // Group by operator ID
+      for (const session of operatorSessions) {
+        const operatorId = session.operator?.id;
+        if (operatorId && operatorId !== -1) {
+          if (!this.cachedOperatorSessions.has(operatorId)) {
+            this.cachedOperatorSessions.set(operatorId, []);
+          }
+          this.cachedOperatorSessions.get(operatorId).push(session);
+        }
+      }
+      
+      console.log(`[${this.getTimestamp()}] ✅ Loaded ${operatorSessions.length} operator sessions for ${this.cachedOperatorSessions.size} operators`);
+      
+      // 4. Load item sessions for this machine today (group by item ID)
+      const itemSessionColl = db.collection(config.itemSessionCollectionName);
+      const itemSessions = await itemSessionColl.find({
+        'machine.serial': machineSerial,
+        'timestamps.start': { $gte: this.todayStart }
+      }).sort({ 'timestamps.start': 1 }).toArray();
+      
+      // Group by item ID
+      for (const session of itemSessions) {
+        const itemId = session.item?.id;
+        if (itemId) {
+          if (!this.cachedItemSessions.has(itemId)) {
+            this.cachedItemSessions.set(itemId, []);
+          }
+          this.cachedItemSessions.get(itemId).push(session);
+        }
+      }
+      
+      console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
+      console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error loading today's sessions:`, error);
+      // Don't throw - simulator can continue without cache, it just won't update cache totals
+    }
+  }
+
+  /**
+   * ⭐ Recalculates and updates daily cache totals using in-memory session data
+   * This is called after session updates to keep cache up-to-date in real-time
+   */
+  async recalculateDailyCacheTotals() {
+    try {
+      if (!this.todayStart) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ todayStart not set, skipping cache recalculation`);
+        return;
+      }
+
+      const db = this.client.db(this.dbName);
+      const now = new Date();
+      
+      // Recalculate and update cache using in-memory session arrays
+      const result = await recalculateAndUpdateCache({
+        db,
+        machineSerial: this.machineConfig.serial,
+        machineName: this.machineConfig.name,
+        machineSessions: this.cachedMachineSessions,
+        faultSessions: this.cachedFaultSessions,
+        operatorSessionsMap: this.cachedOperatorSessions,
+        itemSessionsMap: this.cachedItemSessions,
+        queryStart: this.todayStart,
+        queryEnd: now
+      });
+      
+      if (result.success) {
+        console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.itemTotals} items)`);
+      } else {
+        console.error(`[${this.getTimestamp()}] ❌ Cache update failed: ${result.error}`);
+      }
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error recalculating daily cache totals:`, error);
+      // Don't throw - cache updates are non-critical
+    }
   }
 
   selectInitialItem() {
@@ -463,6 +598,13 @@ class MachineSimulator {
       this.currentSessionStartTime = runningState.timestamp;
 
       console.log(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
+      
+      // ⭐ Push to in-memory cache array
+      sessionData._id = result.insertedId;
+      this.cachedMachineSessions.push(sessionData);
+      
+      // ⭐ Trigger cache recalculation
+      await this.recalculateDailyCacheTotals();
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting machine session:`, error.message);
@@ -524,7 +666,18 @@ class MachineSimulator {
         this.operatorSessionIdsByStation.set(op.station, res.insertedId);
 
         console.log(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
+        
+        // ⭐ Push to in-memory cache array
+        opDoc._id = res.insertedId;
+        if (!this.cachedOperatorSessions.has(op.id)) {
+          this.cachedOperatorSessions.set(op.id, []);
+        }
+        this.cachedOperatorSessions.get(op.id).push(opDoc);
       }
+      
+      // ⭐ Trigger cache recalculation after all operator sessions started
+      await this.recalculateDailyCacheTotals();
+      
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting operator sessions:`, error.message);
     }
@@ -572,7 +725,18 @@ class MachineSimulator {
         const res = await coll.insertOne(doc);
         this.itemSessionIdsByItem.set(it.id, res.insertedId);
         console.log(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
+        
+        // ⭐ Push to in-memory cache array
+        doc._id = res.insertedId;
+        if (!this.cachedItemSessions.has(it.id)) {
+          this.cachedItemSessions.set(it.id, []);
+        }
+        this.cachedItemSessions.get(it.id).push(doc);
       }
+      
+      // ⭐ Trigger cache recalculation after all item sessions started
+      await this.recalculateDailyCacheTotals();
+      
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting item sessions:`, error.message);
     }
@@ -775,6 +939,15 @@ class MachineSimulator {
       await this.updateSessionStats();
 
       console.log(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
+      
+      // ⭐ Sync in-memory cache array with updated session from DB
+      const updatedSession = await sessionCollection.findOne({ _id: this.currentSessionId });
+      if (updatedSession) {
+        const sessionIndex = this.cachedMachineSessions.findIndex(s => s._id.equals(this.currentSessionId));
+        if (sessionIndex !== -1) {
+          this.cachedMachineSessions[sessionIndex] = updatedSession;
+        }
+      }
 
       // Also end any item-sessions tied to this machine session
       await this.endItemSessions(endState);
@@ -783,6 +956,9 @@ class MachineSimulator {
       if (this.currentFaultSessionId) {
         await this.endFaultSession(endState);
       }
+      
+      // ⭐ Trigger cache recalculation after session end
+      await this.recalculateDailyCacheTotals();
 
       // Reset session tracking
       this.currentSessionId = null;
@@ -799,7 +975,7 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
-      for (const [_, opSessionId] of this.operatorSessionIdsByStation) {
+      for (const [operatorId, opSessionId] of this.operatorSessionIdsByStation) {
         await coll.updateOne(
           { _id: opSessionId },
           {
@@ -811,12 +987,28 @@ class MachineSimulator {
           }
         );
         await this.recalculateOperatorSession(opSessionId);
+        
+        // ⭐ Sync in-memory cache array with updated session from DB
+        const updatedSession = await coll.findOne({ _id: opSessionId });
+        if (updatedSession && updatedSession.operator?.id) {
+          const opId = updatedSession.operator.id;
+          if (this.cachedOperatorSessions.has(opId)) {
+            const sessions = this.cachedOperatorSessions.get(opId);
+            const sessionIndex = sessions.findIndex(s => s._id.equals(opSessionId));
+            if (sessionIndex !== -1) {
+              sessions[sessionIndex] = updatedSession;
+            }
+          }
+        }
       }
 
       this.operatorSessionIdsByOperator.clear();
       this.operatorSessionIdsByStation.clear();
 
       console.log(`[${this.getTimestamp()}] 🛑 Ended all operator sessions for machine ${this.machineConfig.name}`);
+      
+      // ⭐ Trigger cache recalculation after operator sessions end
+      await this.recalculateDailyCacheTotals();
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending operator sessions:`, error.message);
@@ -864,7 +1056,7 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.itemSessionCollectionName);
 
-      for (const [_, sessId] of this.itemSessionIdsByItem) {
+      for (const [itemId, sessId] of this.itemSessionIdsByItem) {
         await coll.updateOne(
           { _id: sessId },
           {
@@ -873,10 +1065,26 @@ class MachineSimulator {
           }
         );
         await this.recalculateItemSession(sessId);
+        
+        // ⭐ Sync in-memory cache array with updated session from DB
+        const updatedSession = await coll.findOne({ _id: sessId });
+        if (updatedSession && updatedSession.item?.id) {
+          const itmId = updatedSession.item.id;
+          if (this.cachedItemSessions.has(itmId)) {
+            const sessions = this.cachedItemSessions.get(itmId);
+            const sessionIndex = sessions.findIndex(s => s._id.equals(sessId));
+            if (sessionIndex !== -1) {
+              sessions[sessionIndex] = updatedSession;
+            }
+          }
+        }
       }
 
       this.itemSessionIdsByItem.clear();
       console.log(`[${this.getTimestamp()}] 🛑 Ended all item sessions for machine ${this.machineConfig.name}`);
+      
+      // ⭐ Cache recalculation is triggered by endMachineSession, so no need to call here
+      
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending item sessions:`, error.message);
     }
@@ -1137,6 +1345,14 @@ class MachineSimulator {
       const res = await coll.insertOne(doc);
       this.currentFaultSessionId = res.insertedId;
       console.log(`[${this.getTimestamp()}] 🚨 Started fault session ${res.insertedId}`);
+      
+      // ⭐ Push to in-memory cache array
+      doc._id = res.insertedId;
+      this.cachedFaultSessions.push(doc);
+      
+      // ⭐ Trigger cache recalculation
+      await this.recalculateDailyCacheTotals();
+      
     } catch (e) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting fault session:`, e.message);
     }
@@ -1156,6 +1372,19 @@ class MachineSimulator {
 
       await this.recalculateFaultSession(this.currentFaultSessionId);
       console.log(`[${this.getTimestamp()}] ✅ Ended fault session ${this.currentFaultSessionId}`);
+      
+      // ⭐ Sync in-memory cache array with updated session from DB
+      const updatedSession = await coll.findOne({ _id: this.currentFaultSessionId });
+      if (updatedSession) {
+        const sessionIndex = this.cachedFaultSessions.findIndex(s => s._id.equals(this.currentFaultSessionId));
+        if (sessionIndex !== -1) {
+          this.cachedFaultSessions[sessionIndex] = updatedSession;
+        }
+      }
+      
+      // ⭐ Trigger cache recalculation
+      await this.recalculateDailyCacheTotals();
+      
     } catch (e) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending fault session:`, e.message);
     } finally {
