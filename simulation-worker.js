@@ -52,6 +52,7 @@ class MachineSimulator {
     this.cachedOperatorSessions = new Map();          // operatorId -> session array for today
     this.cachedItemSessions = new Map();              // itemId -> session array for today
     this.todayStart = null;                           // Midnight today (for filtering)
+    this.cacheUpdateInterval = null;                  // Recurring interval for cache updates
   }
 
   // Helper method to check if machine is SPF
@@ -276,6 +277,9 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
       console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
       
+      // ⭐ Start the recurring cache update interval
+      this.startCacheUpdateInterval();
+      
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error loading today's sessions:`, error);
       // Don't throw - simulator can continue without cache, it just won't update cache totals
@@ -318,6 +322,37 @@ class MachineSimulator {
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating daily cache totals:`, error);
       // Don't throw - cache updates are non-critical
+    }
+  }
+
+  /**
+   * ⭐ Starts the recurring cache update interval
+   * Cache updates run automatically every N seconds based on config
+   */
+  startCacheUpdateInterval() {
+    // Stop any existing interval
+    if (this.cacheUpdateInterval) {
+      clearInterval(this.cacheUpdateInterval);
+    }
+
+    const intervalMs = (config.cacheUpdateIntervalSeconds || 30) * 1000;
+    
+    console.log(`[${this.getTimestamp()}] ⏰ Starting cache update interval (every ${config.cacheUpdateIntervalSeconds || 30} seconds)`);
+    
+    // Set recurring interval
+    this.cacheUpdateInterval = setInterval(async () => {
+      await this.recalculateDailyCacheTotals();
+    }, intervalMs);
+  }
+
+  /**
+   * ⭐ Stops the cache update interval
+   */
+  stopCacheUpdateInterval() {
+    if (this.cacheUpdateInterval) {
+      clearInterval(this.cacheUpdateInterval);
+      this.cacheUpdateInterval = null;
+      console.log(`[${this.getTimestamp()}] ⏹️ Stopped cache update interval`);
     }
   }
 
@@ -603,8 +638,7 @@ class MachineSimulator {
       sessionData._id = result.insertedId;
       this.cachedMachineSessions.push(sessionData);
       
-      // ⭐ Trigger cache recalculation
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting machine session:`, error.message);
@@ -675,8 +709,7 @@ class MachineSimulator {
         this.cachedOperatorSessions.get(op.id).push(opDoc);
       }
       
-      // ⭐ Trigger cache recalculation after all operator sessions started
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache update scheduled by startMachineSession, no need to call again
       
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting operator sessions:`, error.message);
@@ -734,8 +767,7 @@ class MachineSimulator {
         this.cachedItemSessions.get(it.id).push(doc);
       }
       
-      // ⭐ Trigger cache recalculation after all item sessions started
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache update scheduled by startMachineSession, no need to call again
       
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting item sessions:`, error.message);
@@ -850,7 +882,16 @@ class MachineSimulator {
         { $set: updateData }
       );
 
-      console.log(`[${this.getTimestamp()}] 📊 Updated session ${sessionId} stats: runtime=${Math.round(runtime)}s, workTime=${Math.round(workTime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${Number(totalTimeCredit.toFixed(2))}s`);
+      // ⭐ Sync in-memory cache array with updated values (don't refetch from DB)
+      const sessionIndex = this.cachedMachineSessions.findIndex(s => s._id.equals(sessionId));
+      if (sessionIndex !== -1) {
+        Object.assign(this.cachedMachineSessions[sessionIndex], updateData);
+      }
+
+      // Reduced logging to prevent console spam - only log every 100 updates
+      if (totalCount % 100 === 0) {
+        console.log(`[${this.getTimestamp()}] 📊 Updated session ${sessionId} stats: runtime=${Math.round(runtime)}s, workTime=${Math.round(workTime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${Number(totalTimeCredit.toFixed(2))}s`);
+      }
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error updating session stats:`, error.message);
@@ -886,22 +927,37 @@ class MachineSimulator {
       const timeCreditByItem = byItem.map(x => Number(x.tci.toFixed(2)));
       const totalTimeCredit = Number(byItem.reduce((a, x) => a + x.tci, 0).toFixed(2));
 
+      const updateData = {
+        runtime: Math.round(runtime),
+        workTime: Math.round(workTime),
+        totalCount,
+        misfeedCount,
+        totalCountByItem,
+        timeCreditByItem,
+        totalTimeCredit
+      };
+
       await coll.updateOne(
         { _id: sessionId },
-        {
-          $set: {
-            runtime: Math.round(runtime),
-            workTime: Math.round(workTime),
-            totalCount,
-            misfeedCount,
-            totalCountByItem,
-            timeCreditByItem,
-            totalTimeCredit
-          }
-        }
+        { $set: updateData }
       );
 
-      console.log(`[${this.getTimestamp()}] 📊 Updated operator session ${sessionId} stats: runtime=${Math.round(runtime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${totalTimeCredit}s`);
+      // ⭐ Sync in-memory cache array with updated values
+      if (s.operator?.id) {
+        const opId = s.operator.id;
+        if (this.cachedOperatorSessions.has(opId)) {
+          const sessions = this.cachedOperatorSessions.get(opId);
+          const sessionIndex = sessions.findIndex(sess => sess._id.equals(sessionId));
+          if (sessionIndex !== -1) {
+            Object.assign(sessions[sessionIndex], updateData);
+          }
+        }
+      }
+
+      // Reduced logging - only log every 100 counts
+      if (totalCount % 100 === 0) {
+        console.log(`[${this.getTimestamp()}] 📊 Updated operator session ${sessionId} stats: runtime=${Math.round(runtime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${totalTimeCredit}s`);
+      }
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating operator session stats:`, error.message);
@@ -957,8 +1013,7 @@ class MachineSimulator {
         await this.endFaultSession(endState);
       }
       
-      // ⭐ Trigger cache recalculation after session end
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
 
       // Reset session tracking
       this.currentSessionId = null;
@@ -1007,8 +1062,7 @@ class MachineSimulator {
 
       console.log(`[${this.getTimestamp()}] 🛑 Ended all operator sessions for machine ${this.machineConfig.name}`);
       
-      // ⭐ Trigger cache recalculation after operator sessions end
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache update will be triggered by endMachineSession
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending operator sessions:`, error.message);
@@ -1112,21 +1166,36 @@ class MachineSimulator {
       const pph = std < 60 ? std * 60 : std;
       const totalTimeCredit = pph > 0 ? Number((totalCount / (pph / 3600)).toFixed(2)) : 0;
 
+      const updateData = {
+        activeStations,
+        runtime: Math.round(runtime),
+        workTime: Math.round(workTime),
+        totalCount,
+        misfeedCount,
+        totalTimeCredit
+      };
+
       await coll.updateOne(
         { _id: sessionId },
-        {
-          $set: {
-            activeStations,
-            runtime: Math.round(runtime),
-            workTime: Math.round(workTime),
-            totalCount,
-            misfeedCount,
-            totalTimeCredit
-          }
-        }
+        { $set: updateData }
       );
 
-      console.log(`[${this.getTimestamp()}] 📊 Recalculated item session ${sessionId}: cnt=${totalCount}, tcredit=${totalTimeCredit}s`);
+      // ⭐ Sync in-memory cache array with updated values
+      if (s.item?.id) {
+        const itmId = s.item.id;
+        if (this.cachedItemSessions.has(itmId)) {
+          const sessions = this.cachedItemSessions.get(itmId);
+          const sessionIndex = sessions.findIndex(sess => sess._id.equals(sessionId));
+          if (sessionIndex !== -1) {
+            Object.assign(sessions[sessionIndex], updateData);
+          }
+        }
+      }
+
+      // Reduced logging - only log every 100 counts
+      if (totalCount % 100 === 0) {
+        console.log(`[${this.getTimestamp()}] 📊 Recalculated item session ${sessionId}: cnt=${totalCount}, tcredit=${totalTimeCredit}s`);
+      }
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating item session:`, error.message);
     }
@@ -1350,8 +1419,7 @@ class MachineSimulator {
       doc._id = res.insertedId;
       this.cachedFaultSessions.push(doc);
       
-      // ⭐ Trigger cache recalculation
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
       
     } catch (e) {
       console.error(`[${this.getTimestamp()}] ❌ Error starting fault session:`, e.message);
@@ -1382,8 +1450,7 @@ class MachineSimulator {
         }
       }
       
-      // ⭐ Trigger cache recalculation
-      await this.recalculateDailyCacheTotals();
+      // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
       
     } catch (e) {
       console.error(`[${this.getTimestamp()}] ❌ Error ending fault session:`, e.message);
@@ -1403,11 +1470,28 @@ class MachineSimulator {
       const faulttime = end.diff(start, 'seconds').seconds;
       const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
       const workTimeMissed = faulttime * activeStations;
+      
+      const updateData = { 
+        faulttime: Math.round(faulttime), 
+        workTimeMissed: Math.round(workTimeMissed), 
+        activeStations 
+      };
+      
       await coll.updateOne(
         { _id: sessionId },
-        { $set: { faulttime: Math.round(faulttime), workTimeMissed: Math.round(workTimeMissed), activeStations } }
+        { $set: updateData }
       );
-      console.log(`[${this.getTimestamp()}] 🧮 Recalc fault session ${sessionId}: faulttime=${Math.round(faulttime)}s missed=${Math.round(workTimeMissed)}s`);
+      
+      // ⭐ Sync in-memory cache array with updated values
+      const sessionIndex = this.cachedFaultSessions.findIndex(sess => sess._id.equals(sessionId));
+      if (sessionIndex !== -1) {
+        Object.assign(this.cachedFaultSessions[sessionIndex], updateData);
+      }
+      
+      // Log only at start/end of fault sessions to reduce spam
+      if (s.timestamps.end) {
+        console.log(`[${this.getTimestamp()}] 🧮 Recalc fault session ${sessionId}: faulttime=${Math.round(faulttime)}s missed=${Math.round(workTimeMissed)}s`);
+      }
     } catch (e) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating fault session:`, e.message);
     }
@@ -1438,6 +1522,9 @@ class MachineSimulator {
     this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.countTimeouts.clear();
     this.isRunning = false;
+    
+    // ⭐ Stop the cache update interval
+    this.stopCacheUpdateInterval();
 
     const endState = {
       timestamp: new Date(),
@@ -1620,7 +1707,7 @@ class MachineSimulator {
       }
     }, delayMs);
 
-    console.log(delayMs);
+    // Delay logging removed to reduce console spam
     this.countTimeouts.set(station, timeout);
   }
 
