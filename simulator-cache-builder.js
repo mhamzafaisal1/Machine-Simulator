@@ -288,10 +288,13 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
 async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'totals-daily') {
   try {
     if (!dailyTotals || dailyTotals.length === 0) {
+      console.warn(`[${new Date().toISOString()}] ⚠️ No daily totals to upsert`);
       return { upsertedCount: 0, modifiedCount: 0 };
     }
 
     const cacheCollection = db.collection(collectionName);
+    
+    console.log(`[${new Date().toISOString()}] 🔄 Upserting ${dailyTotals.length} records to ${collectionName}...`);
     
     // Prepare bulk operations for upsert
     const ops = dailyTotals.map(total => ({
@@ -307,12 +310,14 @@ async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'total
     // Execute bulk write
     const result = await cacheCollection.bulkWrite(ops, { ordered: false });
     
+    console.log(`[${new Date().toISOString()}] ✅ Upserted ${result.upsertedCount} new, modified ${result.modifiedCount} existing records`);
+    
     return {
       upsertedCount: result.upsertedCount,
       modifiedCount: result.modifiedCount
     };
   } catch (error) {
-    console.error('Error upserting daily totals to cache:', error);
+    console.error(`[${new Date().toISOString()}] ❌ Error upserting daily totals to cache:`, error);
     throw error;
   }
 }
@@ -343,6 +348,8 @@ async function recalculateAndUpdateCache({
   queryEnd 
 }) {
   try {
+    console.log(`[${new Date().toISOString()}] 🔧 Recalculating cache for machine ${machineSerial} using ${machineSessions.length} machine sessions, ${operatorSessionsMap.size} operators, ${itemSessionsMap.size} items`);
+    
     const dailyTotals = [];
 
     // 1. Build machine daily total
@@ -357,6 +364,7 @@ async function recalculateAndUpdateCache({
     
     if (machineDailyTotal) {
       dailyTotals.push(machineDailyTotal);
+      console.log(`[${new Date().toISOString()}] ✅ Built machine total: ${machineDailyTotal.totalCounts} counts, ${machineDailyTotal.runtimeMs}ms runtime`);
     }
 
     // 2. Build operator-machine daily totals

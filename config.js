@@ -39,6 +39,9 @@ module.exports = {
     countDailyCollectionName: 'count-daily',
     countWeeklyCollectionName: 'count-weekly',
     countMonthlyCollectionName: 'count-monthly',
+    
+    // Cache configuration
+    cacheUpdateIntervalSeconds: 30, // How often to update cache (in seconds)
   
     // Machine data from CLI arguments
     machine: {
