@@ -95,8 +95,10 @@ function buildMachineDailyTotal({ machineSerial, machineName, machineSessions, f
     const faultClampedMs = Math.min(faultTimeMs, nonRunMs);
     const pausedTimeMs = Math.max(0, nonRunMs - faultClampedMs);
     
-    // Create date string for today
+    // Create date string and ensure timezone consistency
     const dateStr = queryStart.toISOString().split('T')[0];
+    // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
+    const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
 
     return {
       _id: `machine-${machineSerial}-${dateStr}`,
@@ -104,7 +106,7 @@ function buildMachineDailyTotal({ machineSerial, machineName, machineSessions, f
       machineSerial: machineSerial,
       machineName: machineName,
       date: dateStr,
-      dateObj: new Date(dateStr + 'T00:00:00.000Z'),
+      dateObj: dateObj,
       
       // Time metrics (in milliseconds)
       runtimeMs: runtimeMs,
@@ -163,8 +165,10 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
     const faultTimeMs = 0; // Operators don't have separate fault tracking
     const pausedTimeMs = Math.max(0, windowMs - runtimeMs);
     
-    // Create date string
+    // Create date string and ensure timezone consistency
     const dateStr = queryStart.toISOString().split('T')[0];
+    // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
+    const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
 
     return {
       _id: `operator-machine-${operatorId}-${machineSerial}-${dateStr}`,
@@ -174,7 +178,7 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
       machineSerial: machineSerial,
       machineName: machineName,
       date: dateStr,
-      dateObj: new Date(dateStr + 'T00:00:00.000Z'),
+      dateObj: dateObj,
       
       // Time metrics (in milliseconds)
       runtimeMs: runtimeMs,
@@ -240,8 +244,10 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
     const faultTimeMs = 0; // Items don't track separate faults
     const pausedTimeMs = Math.max(0, windowMs - runtimeMs);
     
-    // Create date string
+    // Create date string and ensure timezone consistency
     const dateStr = queryStart.toISOString().split('T')[0];
+    // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
+    const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
 
     return {
       _id: `machine-item-${machineSerial}-${itemId}-${dateStr}`,
@@ -251,7 +257,7 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
       machineSerial: machineSerial,
       machineName: machineName || `Serial ${machineSerial}`,
       date: dateStr,
-      dateObj: new Date(dateStr + 'T00:00:00.000Z'),
+      dateObj: dateObj,
       
       // Time metrics (in milliseconds)
       runtimeMs: runtimeMs,
@@ -275,6 +281,112 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
     };
   } catch (error) {
     console.error(`Error building item-machine daily total for item ${itemId} on machine ${machineSerial}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Builds daily totals for operator-item combinations using in-memory session arrays
+ * @param {Object} options
+ * @param {Number} options.operatorId - Operator ID
+ * @param {String} options.operatorName - Operator name
+ * @param {Number} options.itemId - Item ID
+ * @param {String} options.itemName - Item name
+ * @param {Number} options.machineSerial - Machine serial number
+ * @param {String} options.machineName - Machine name
+ * @param {Array} options.operatorSessions - In-memory operator sessions for this operator
+ * @param {Date} options.queryStart - Start of day
+ * @param {Date} options.queryEnd - Current time
+ * @param {String} options.source - Data source ('simulator', 'cache', or 'datafeed')
+ * @returns {Object} Operator-item daily totals record
+ */
+function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemName, machineSerial, machineName, operatorSessions, queryStart, queryEnd, source = 'simulator' }) {
+  try {
+    // Calculate totals for this specific operator-item combination
+    let workedTimeSec = 0, timeCreditSec = 0;
+    let totalCounts = 0, totalMisfeeds = 0;
+    let itemStandard = 0;
+
+    for (const s of operatorSessions) {
+      // Find the index of this item in the session's items array
+      const itemIndex = s.items?.findIndex(it => it.id === itemId);
+      
+      if (itemIndex === -1 || itemIndex === undefined) {
+        // This session doesn't involve this item, skip
+        continue;
+      }
+
+      // Get the overlap factor for this session
+      const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
+      
+      // Get per-item metrics from the session
+      // totalCountByItem and timeCreditByItem are arrays aligned with s.items
+      const countForItem = safe(s.totalCountByItem?.[itemIndex] || 0);
+      const timeCreditForItem = safe(s.timeCreditByItem?.[itemIndex] || 0);
+      
+      totalCounts += countForItem * factor;
+      timeCreditSec += timeCreditForItem * factor;
+      
+      // Count misfeeds for this specific item
+      const misfeedsForItem = (s.misfeeds || []).filter(m => m.item?.id === itemId).length;
+      totalMisfeeds += misfeedsForItem * factor;
+      
+      // Calculate worked time proportional to this item's contribution
+      // If operator worked on multiple items, distribute time based on counts
+      const totalCountInSession = safe(s.totalCount || 0);
+      if (totalCountInSession > 0) {
+        const itemProportion = countForItem / totalCountInSession;
+        workedTimeSec += safe(s.workTime) * factor * itemProportion;
+      }
+      
+      // Get item standard from session items
+      if (!itemStandard && s.items?.[itemIndex]?.standard) {
+        itemStandard = s.items[itemIndex].standard;
+      }
+    }
+
+    // Convert to milliseconds
+    const workedTimeMs = Math.round(workedTimeSec * 1000);
+    const timeCreditMs = Math.round(timeCreditSec * 1000);
+    
+    // Create date string and ensure timezone consistency
+    const dateStr = queryStart.toISOString().split('T')[0];
+    // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
+    const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
+
+    return {
+      _id: `operator-item-${operatorId}-${itemId}-${machineSerial}-${dateStr}`,
+      entityType: 'operator-item',
+      operatorId: operatorId,
+      operatorName: operatorName,
+      itemId: itemId,
+      itemName: itemName || `Item ${itemId}`,
+      machineSerial: machineSerial,
+      machineName: machineName,
+      date: dateStr,
+      dateObj: dateObj,
+      
+      // Time metrics (in milliseconds)
+      workedTimeMs: workedTimeMs,
+      totalTimeCreditMs: timeCreditMs,
+      
+      // Count metrics (rounded)
+      totalCounts: Math.round(totalCounts),
+      totalMisfeeds: Math.round(totalMisfeeds),
+      
+      // Additional item-specific metrics
+      itemStandard: itemStandard,
+      
+      // Data provenance (for debugging hybrid merges)
+      source: source,
+      
+      // Metadata
+      lastUpdated: DateTime.now().setZone(SYSTEM_TIMEZONE).toJSDate(),
+      timeRange: { start: queryStart, end: queryEnd },
+      version: '1.0.0'
+    };
+  } catch (error) {
+    console.error(`Error building operator-item daily total for operator ${operatorId} and item ${itemId}:`, error);
     return null;
   }
 }
@@ -409,7 +521,52 @@ async function recalculateAndUpdateCache({
       }
     }
 
-    // 4. Upsert all daily totals to cache in one batch
+    // 4. Build operator-item daily totals
+    // For each operator, extract unique items they worked on and build operator-item records
+    let operatorItemCount = 0;
+    for (const [operatorId, sessions] of operatorSessionsMap.entries()) {
+      if (sessions.length === 0) continue;
+      
+      const operatorName = sessions[0]?.operator?.name || `Operator ${operatorId}`;
+      
+      // Collect all unique items this operator worked on
+      const uniqueItems = new Map(); // itemId -> itemName
+      
+      for (const session of sessions) {
+        if (!session.items || session.items.length === 0) continue;
+        
+        for (const item of session.items) {
+          if (!uniqueItems.has(item.id)) {
+            uniqueItems.set(item.id, item.name || `Item ${item.id}`);
+          }
+        }
+      }
+      
+      // Build operator-item record for each unique item
+      for (const [itemId, itemName] of uniqueItems.entries()) {
+        const operatorItemTotal = buildOperatorItemDailyTotal({
+          operatorId,
+          operatorName,
+          itemId,
+          itemName,
+          machineSerial,
+          machineName,
+          operatorSessions: sessions,
+          queryStart,
+          queryEnd,
+          source: 'simulator'
+        });
+        
+        if (operatorItemTotal) {
+          dailyTotals.push(operatorItemTotal);
+          operatorItemCount++;
+        }
+      }
+    }
+    
+    console.log(`[${new Date().toISOString()}] 📊 Built ${operatorItemCount} operator-item totals`);
+
+    // 5. Upsert all daily totals to cache in one batch
     const result = await upsertDailyTotalsToCache(db, dailyTotals);
     
     return {
@@ -417,7 +574,8 @@ async function recalculateAndUpdateCache({
       recordsUpdated: result.upsertedCount + result.modifiedCount,
       machineTotals: 1,
       operatorTotals: operatorSessionsMap.size,
-      itemTotals: itemSessionsMap.size
+      itemTotals: itemSessionsMap.size,
+      operatorItemTotals: operatorItemCount
     };
   } catch (error) {
     console.error('Error recalculating and updating cache:', error);
@@ -432,6 +590,7 @@ module.exports = {
   buildMachineDailyTotal,
   buildOperatorMachineDailyTotal,
   buildItemMachineDailyTotal,
+  buildOperatorItemDailyTotal,
   upsertDailyTotalsToCache,
   recalculateAndUpdateCache,
   formatDuration,
