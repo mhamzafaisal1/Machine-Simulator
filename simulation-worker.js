@@ -314,7 +314,7 @@ class MachineSimulator {
       });
       
       if (result.success) {
-        console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
+        console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.machineItemTotals} machine-items, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
       } else {
         console.error(`[${this.getTimestamp()}] ❌ Cache update failed: ${result.error}`);
       }

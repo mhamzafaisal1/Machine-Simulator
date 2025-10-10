@@ -286,6 +286,80 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
 }
 
 /**
+ * Builds daily totals for items aggregated across the machine (plant-wide when combined with other simulators)
+ * @param {Object} options
+ * @param {Number} options.itemId - Item ID
+ * @param {String} options.itemName - Item name
+ * @param {Number} options.itemStandard - Item standard (PPH)
+ * @param {Number} options.machineSerial - Machine serial number (for tracking contribution)
+ * @param {Array} options.itemSessions - In-memory item sessions for this item
+ * @param {Date} options.queryStart - Start of day
+ * @param {Date} options.queryEnd - Current time
+ * @param {String} options.source - Data source ('simulator', 'cache', or 'datafeed')
+ * @returns {Object} Item daily totals record (for atomic aggregation across machines)
+ */
+function buildItemDailyTotal({ itemId, itemName, itemStandard, machineSerial, itemSessions, queryStart, queryEnd, source = 'simulator' }) {
+  try {
+    // Calculate totals for this item from all sessions on this machine
+    let workedTimeSec = 0, timeCreditSec = 0;
+    let totalCounts = 0, totalMisfeeds = 0;
+    let totalRuntimeSec = 0;
+
+    for (const s of itemSessions) {
+      const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
+      workedTimeSec += safe(s.workTime) * factor;
+      timeCreditSec += safe(s.totalTimeCredit) * factor;
+      totalCounts += safe(s.totalCount) * factor;
+      totalMisfeeds += safe(s.misfeedCount) * factor;
+      totalRuntimeSec += safe(s.runtime) * factor;
+    }
+
+    // Convert to milliseconds
+    const workedTimeMs = Math.round(workedTimeSec * 1000);
+    const timeCreditMs = Math.round(timeCreditSec * 1000);
+    const runtimeMs = Math.round(totalRuntimeSec * 1000);
+    
+    // Create date string and ensure timezone consistency
+    const dateStr = queryStart.toISOString().split('T')[0];
+    // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
+    const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
+
+    return {
+      _id: `item-${itemId}-${dateStr}`,
+      entityType: 'item',
+      itemId: itemId,
+      itemName: itemName || `Item ${itemId}`,
+      date: dateStr,
+      dateObj: dateObj,
+      
+      // These fields will be atomically incremented across all machines
+      runtimeMs: runtimeMs,
+      workedTimeMs: workedTimeMs,
+      totalTimeCreditMs: timeCreditMs,
+      totalCounts: Math.round(totalCounts),
+      totalMisfeeds: Math.round(totalMisfeeds),
+      
+      // Item-specific metrics
+      itemStandard: itemStandard,
+      
+      // Track machine contribution (for debugging)
+      contributingMachine: machineSerial,
+      
+      // Data provenance
+      source: source,
+      
+      // Metadata
+      lastUpdated: DateTime.now().setZone(SYSTEM_TIMEZONE).toJSDate(),
+      timeRange: { start: queryStart, end: queryEnd },
+      version: '1.0.0'
+    };
+  } catch (error) {
+    console.error(`Error building item daily total for item ${itemId}:`, error);
+    return null;
+  }
+}
+
+/**
  * Builds daily totals for operator-item combinations using in-memory session arrays
  * @param {Object} options
  * @param {Number} options.operatorId - Operator ID
@@ -393,6 +467,8 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
 
 /**
  * Upserts daily totals to cache collection
+ * For 'item' entityType, uses atomic $inc operations to aggregate across machines
+ * For other types, uses $set to replace
  * @param {Object} db - MongoDB database instance
  * @param {Array} dailyTotals - Array of daily total records to upsert
  * @param {String} collectionName - Collection name (default: 'totals-daily')
@@ -409,15 +485,52 @@ async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'total
     console.log(`[${new Date().toISOString()}] 🔄 Upserting ${dailyTotals.length} records to ${collectionName}...`);
     
     // Prepare bulk operations for upsert
-    const ops = dailyTotals.map(total => ({
-      updateOne: {
-        filter: { _id: total._id },
-        update: { 
-          $set: total
-        },
-        upsert: true
+    const ops = dailyTotals.map(total => {
+      // For 'item' entityType, use atomic $inc operations to aggregate across machines
+      if (total.entityType === 'item') {
+        return {
+          updateOne: {
+            filter: { _id: total._id },
+            update: { 
+              $inc: {
+                runtimeMs: total.runtimeMs || 0,
+                workedTimeMs: total.workedTimeMs || 0,
+                totalTimeCreditMs: total.totalTimeCreditMs || 0,
+                totalCounts: total.totalCounts || 0,
+                totalMisfeeds: total.totalMisfeeds || 0
+              },
+              $set: {
+                entityType: total.entityType,
+                itemId: total.itemId,
+                itemName: total.itemName,
+                date: total.date,
+                dateObj: total.dateObj,
+                itemStandard: total.itemStandard,
+                source: total.source,
+                lastUpdated: total.lastUpdated,
+                timeRange: total.timeRange,
+                version: total.version
+              },
+              $addToSet: {
+                contributingMachines: total.contributingMachine
+              }
+            },
+            upsert: true
+          }
+        };
+      } else {
+        // For other entity types, use regular $set
+        return {
+          updateOne: {
+            filter: { _id: total._id },
+            update: { 
+              $set: total
+            },
+            upsert: true
+          }
+        };
       }
-    }));
+    });
 
     // Execute bulk write
     const result = await cacheCollection.bulkWrite(ops, { ordered: false });
@@ -521,6 +634,29 @@ async function recalculateAndUpdateCache({
       }
     }
 
+    // 3b. Build plant-wide item daily totals (aggregated across machines via atomic operations)
+    for (const [itemId, sessions] of itemSessionsMap.entries()) {
+      if (sessions.length === 0) continue;
+      
+      const itemName = sessions[0]?.item?.name || `Item ${itemId}`;
+      const itemStandard = sessions[0]?.item?.standard || 0;
+      
+      const itemTotal = buildItemDailyTotal({
+        itemId,
+        itemName,
+        itemStandard,
+        machineSerial,
+        itemSessions: sessions,
+        queryStart,
+        queryEnd,
+        source: 'simulator'
+      });
+      
+      if (itemTotal) {
+        dailyTotals.push(itemTotal);
+      }
+    }
+
     // 4. Build operator-item daily totals
     // For each operator, extract unique items they worked on and build operator-item records
     let operatorItemCount = 0;
@@ -574,7 +710,8 @@ async function recalculateAndUpdateCache({
       recordsUpdated: result.upsertedCount + result.modifiedCount,
       machineTotals: 1,
       operatorTotals: operatorSessionsMap.size,
-      itemTotals: itemSessionsMap.size,
+      machineItemTotals: itemSessionsMap.size,
+      itemTotals: itemSessionsMap.size, // Plant-wide item totals
       operatorItemTotals: operatorItemCount
     };
   } catch (error) {
@@ -590,6 +727,7 @@ module.exports = {
   buildMachineDailyTotal,
   buildOperatorMachineDailyTotal,
   buildItemMachineDailyTotal,
+  buildItemDailyTotal,
   buildOperatorItemDailyTotal,
   upsertDailyTotalsToCache,
   recalculateAndUpdateCache,
