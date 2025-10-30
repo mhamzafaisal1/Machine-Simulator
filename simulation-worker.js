@@ -101,12 +101,13 @@ class MachineSimulator {
     const it = this.currentItem;
 
     // Double-check that we have a valid item
-    if (!it || !it.number || !it.name || it.standard === undefined) {
+    const itId = it ? (it.number ?? it.id) : undefined;
+    if (!it || !itId || !it.name || it.standard === undefined) {
       throw new Error('Current item is invalid or missing required fields');
     }
 
-    const make = () => ({ id: it.number, name: it.name, standard: it.standard });
-    const formatItem = (item) => ({ id: item.number, name: item.name, standard: item.standard });
+    const make = () => ({ id: (it.number ?? it.id), name: it.name, standard: it.standard });
+    const formatItem = (item) => ({ id: (item.number ?? item.id), name: item.name, standard: item.standard });
 
     // Use the isSpf() method for consistency
     const isSPF = this.isSpf();
@@ -192,15 +193,17 @@ class MachineSimulator {
     this.validFaults = await faultCollection.find().sort({ code: 1 }).toArray();
     console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.validFaults.length} fault types`);
 
-    // ⭐ PHASE 1: Validate loaded faults (non-breaking)
-    let validFaultCount = 0;
-    this.validFaults.forEach(fault => {
-      if (schemaValidator.validate('fault', fault, { faultCode: fault.code })) {
-        validFaultCount++;
+    // ⭐ Validate adapted faults (non-breaking)
+    try {
+      const adapted = this.validFaults.map(f => schemaAdapters.adaptFaultFromDB(f));
+      let ok = 0;
+      for (const af of adapted) {
+        if (Number.isFinite(af.id) && schemaValidator.validate('fault', af, { faultCode: af.id })) ok++;
       }
-    });
-    if (validFaultCount > 0) {
-      console.log(`[${this.getTimestamp()}] ✅ ${validFaultCount}/${this.validFaults.length} faults passed schema validation`);
+      console.log(`[${this.getTimestamp()}] ✅ Fault schema validation: ${ok}/${adapted.length} adapted faults valid`);
+      this.adaptedFaults = adapted; // optional reference
+    } catch (e) {
+      console.warn(`[${this.getTimestamp()}] ⚠️ Fault validation skipped: ${e.message}`);
     }
 
     if (this.validFaults.length < 58) {
@@ -215,7 +218,8 @@ class MachineSimulator {
     // ⭐ PHASE 1: Validate loaded items (non-breaking)
     let validItemCount = 0;
     this.items.forEach(item => {
-      if (schemaValidator.validate('item', item, { itemId: item.number })) {
+      // Items are now adapted, so use item.id (which has backward compat with item.number)
+      if (schemaValidator.validate('item', item, { itemId: item.id || item.number })) {
         validItemCount++;
       }
     });
@@ -386,7 +390,7 @@ class MachineSimulator {
       // For SPF machines, also set currentItem to the first item for session compatibility
       this.currentItem = this.currentItems[0];
       console.log(`[${this.getTimestamp()}] 🎯 SPF initial items: ${this.currentItems.map(i => i.name).join(', ')}`);
-      console.log(`[${this.getTimestamp()}] 🎯 SPF currentItem set to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      console.log(`[${this.getTimestamp()}] 🎯 SPF currentItem set to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
 
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
@@ -394,7 +398,7 @@ class MachineSimulator {
       }
     } else {
       this.currentItem = selectRandomItem(this.items);       // exactly one
-      console.log(`[${this.getTimestamp()}] 🎯 Non-SPF currentItem set to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      console.log(`[${this.getTimestamp()}] 🎯 Non-SPF currentItem set to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
     }
   }
 
@@ -422,7 +426,7 @@ class MachineSimulator {
       // For SPF machines, also update currentItem to the first item for session compatibility
       this.currentItem = this.currentItems[0];
       console.log(`[${this.getTimestamp()}] 🔁 SPF new items: ${this.currentItems.map(i => i.name).join(', ')}`);
-      console.log(`[${this.getTimestamp()}] 🔁 SPF currentItem updated to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      console.log(`[${this.getTimestamp()}] 🔁 SPF currentItem updated to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
 
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
@@ -430,7 +434,7 @@ class MachineSimulator {
       }
     } else {
       this.currentItem = selectRandomItem(this.items);
-      console.log(`[${this.getTimestamp()}] 🔁 Non-SPF currentItem updated to: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      console.log(`[${this.getTimestamp()}] 🔁 Non-SPF currentItem updated to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
     }
   }
 
@@ -471,10 +475,13 @@ class MachineSimulator {
       { projection: { _id: 0, code: 1, name: 1, rate: 1 } }
     ).toArray();
 
-    // ⭐ PHASE 1: Validate loaded operators (non-breaking, sample only)
-    if (allValidByRange.length > 0) {
-      const sampleOperator = allValidByRange[0];
-      schemaValidator.validate('operator', sampleOperator, { operatorId: sampleOperator.code });
+    // ⭐ Adapt operators to schema format
+    const adaptedOperators = allValidByRange.map(op => schemaAdapters.adaptOperatorFromDB(op));
+
+    // ⭐ Validate adapted operators (sample only)
+    if (adaptedOperators.length > 0) {
+      const sampleOperator = adaptedOperators[0];
+      schemaValidator.validate('operator', sampleOperator, { operatorId: sampleOperator.id });
     }
 
     for (const station of activeStations) {
@@ -491,10 +498,10 @@ class MachineSimulator {
         const ok = !stillClaimed || (stillClaimed.machineSerial === machineSerial && stillClaimed.station === station);
 
         // also enforce your "startsWith('1')" rule
-        const lastIsAllowed = String(lastAssignment.operatorId).startsWith('1') && allValidByRange.some(op => op.code === lastAssignment.operatorId);
+        const lastIsAllowed = String(lastAssignment.operatorId).startsWith('1') && adaptedOperators.some(op => op.id === lastAssignment.operatorId);
 
         if (ok && lastIsAllowed) {
-          candidateOperator = { code: lastAssignment.operatorId, name: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.name || "Unknown", rate: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.rate || 1 };
+          candidateOperator = adaptedOperators.find(op => op.id === lastAssignment.operatorId) || { id: lastAssignment.operatorId, name: { first: "Unknown", surname: "" }, _rate: 1 };
           useLast = true;
         }
       }
@@ -511,13 +518,15 @@ class MachineSimulator {
           { projection: { _id: 0, code: 1, name: 1, rate: 1 } }
         ).toArray();
 
-        const pool = poolDb.filter(op => String(op.code).startsWith('1'));
+        // Adapt pool operators
+        const poolAdapted = poolDb.map(op => schemaAdapters.adaptOperatorFromDB(op));
+        const pool = poolAdapted.filter(op => String(op.id).startsWith('1'));
 
         if (pool.length > 0) {
           candidateOperator = pool[Math.floor(Math.random() * pool.length)];
         } else if (lastAssignment?.operatorId && String(lastAssignment.operatorId).startsWith('1')) {
           // fallback: reuse last if no one else is available and last fits your rule
-          candidateOperator = { code: lastAssignment.operatorId, name: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.name || "Unknown", rate: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.rate || 1 };
+          candidateOperator = adaptedOperators.find(op => op.id === lastAssignment.operatorId) || { id: lastAssignment.operatorId, name: { first: "Unknown", surname: "" }, _rate: 1 };
           useLast = true;
         }
       }
@@ -529,13 +538,13 @@ class MachineSimulator {
           const result = await tickerCollection.findOneAndUpdate(
             {
               $or: [
-                { operatorId: candidateOperator.code },                   // operator held elsewhere
+                { operatorId: candidateOperator.id },                   // operator held elsewhere
                 { machineSerial: machineSerial, station: station }       // this station already held
               ]
             },
             {
               $set: {
-                operatorId: candidateOperator.code,
+                operatorId: candidateOperator.id,
                 machineSerial,
                 station,
                 lastUpdated: new Date()
@@ -547,24 +556,37 @@ class MachineSimulator {
             }
           );
 
+          // Helper to get full name from structured name object or fallback
+          const getFullName = (op) => {
+            if (typeof op.name === 'string') return op.name;
+            if (op.name && op.name.first) {
+              const fullName = `${op.name.first} ${op.name.surname || ''}`.trim();
+              return fullName || 'Unknown';
+            }
+            return 'Unknown';
+          };
+
           // Update our local tracking
-          currentlySimulatedIds.push(candidateOperator.code);
-          assignedOperators.push({ id: candidateOperator.code, name: candidateOperator.name, station, rate: candidateOperator.rate });
-          console.log(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.code} (${candidateOperator.name}) to station ${station} on machine ${machineSerial}`);
+          currentlySimulatedIds.push(candidateOperator.id);
+          const fullName = getFullName(candidateOperator);
+          assignedOperators.push({ id: candidateOperator.id, name: fullName, station, rate: candidateOperator._rate || 1 });
+          console.log(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.id} (${fullName}) to station ${station} on machine ${machineSerial}`);
 
         } catch (error) {
           if (error.code === 11000) {
             // Someone else grabbed it—pick a different one once
-            console.warn(`[${this.getTimestamp()}] ⚠️ Duplicate operator ${candidateOperator.code}; selecting another`);
+            console.warn(`[${this.getTimestamp()}] ⚠️ Duplicate operator ${candidateOperator.id}; selecting another`);
             const altPoolDb = await operatorsCollection.find(
               { code: { $lt: 500000, $nin: currentlySimulatedIds } },
               { projection: { _id: 0, code: 1, name: 1, rate: 1 } }
             ).toArray();
-            const altPool = altPoolDb.filter(op => String(op.code).startsWith('1'));
-            const alt = altPool.find(op => op.code !== (lastAssignment?.operatorId ?? -1));
-            assignedOperators.push({ id: alt ? alt.code : -1, name: alt ? alt.name : "Unknown", rate: allValidByRange.find(op => op.code === lastAssignment.operatorId)?.rate || 1 , station });
+            const altPoolAdapted = altPoolDb.map(op => schemaAdapters.adaptOperatorFromDB(op));
+            const altPool = altPoolAdapted.filter(op => String(op.id).startsWith('1'));
+            const alt = altPool.find(op => op.id !== (lastAssignment?.operatorId ?? -1));
+            const altFullName = alt ? `${alt.name.first} ${alt.name.surname || ''}`.trim() : "Unknown";
+            assignedOperators.push({ id: alt ? alt.id : -1, name: altFullName, rate: alt?._rate || 1 , station });
           } else {
-            console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.code} to station ${station}:`, error.message);
+            console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.id} to station ${station}:`, error.message);
             // Fallback to dummy operator
             assignedOperators.push({ id: -1, name: "Dummy", station, rate: 1 });
           }
@@ -657,21 +679,14 @@ class MachineSimulator {
         timeCreditByItem: currentItems.map(() => 0)
       };
 
-      // ⭐ PHASE 1: Validate session object (non-breaking)
-      // Note: Session validation may fail initially as sessions are built incrementally
-      schemaValidator.validate('session', sessionData, {
-        machineSerial: this.machineConfig.serial,
-        sessionType: 'machine'
-      });
-
-      // Insert session into database
+      // Insert session into database (raw format, not adapted - sessions are too complex for Phase 3/4)
       const result = await sessionCollection.insertOne(sessionData);
       this.currentSessionId = result.insertedId;
       this.currentSessionStartTime = runningState.timestamp;
 
       console.log(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
-      
-      // ⭐ Push to in-memory cache array
+
+      // Push session to in-memory cache array
       sessionData._id = result.insertedId;
       this.cachedMachineSessions.push(sessionData);
       
@@ -732,13 +747,14 @@ class MachineSimulator {
           totalTimeCredit: 0,
         };
 
+        // Insert operator session (raw format, not adapted)
         const res = await coll.insertOne(opDoc);
         this.operatorSessionIdsByOperator.set(op.id, res.insertedId);
         this.operatorSessionIdsByStation.set(op.station, res.insertedId);
 
         console.log(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
-        
-        // ⭐ Push to in-memory cache array
+
+        // Push session to in-memory cache array
         opDoc._id = res.insertedId;
         if (!this.cachedOperatorSessions.has(op.id)) {
           this.cachedOperatorSessions.set(op.id, []);
@@ -763,8 +779,8 @@ class MachineSimulator {
 
       // Build item array per spec: SPF=4 items, non‑SPF=1 item. Always store as array.
       const items = this.isSpf()
-        ? this.currentItems.map(i => ({ id: i.number, name: i.name, standard: i.standard }))
-        : [{ id: this.currentItem.number, name: this.currentItem.name, standard: this.currentItem.standard }];
+        ? this.currentItems.map(i => ({ id: (i.number ?? i.id), name: i.name, standard: i.standard }))
+        : [{ id: (this.currentItem.number ?? this.currentItem.id), name: this.currentItem.name, standard: this.currentItem.standard }];
 
       // Operators with names for context
       const operators = [];
@@ -792,11 +808,12 @@ class MachineSimulator {
           misfeedCount: 0,
           totalTimeCredit: 0
         };
+        // Insert item session (raw format, not adapted)
         const res = await coll.insertOne(doc);
         this.itemSessionIdsByItem.set(it.id, res.insertedId);
         console.log(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
-        
-        // ⭐ Push to in-memory cache array
+
+        // Push session to in-memory cache array
         doc._id = res.insertedId;
         if (!this.cachedItemSessions.has(it.id)) {
           this.cachedItemSessions.set(it.id, []);
@@ -1246,19 +1263,23 @@ class MachineSimulator {
       if (record.operators && record.operators.length > 0) {
         for (const operator of record.operators) {
           if (operator.id !== -1) { // Skip dummy operators
-            // Create operator-specific record
-            const operatorRecord = {
-              ...record,
-              operators: [operator] // Single operator instead of array
-            };
+            // Create operator-specific record (deep copy to avoid _id conflicts)
+            const operatorRecord = JSON.parse(JSON.stringify(record));
+            operatorRecord.operators = [operator]; // Single operator instead of array
+            delete operatorRecord._id; // Remove _id to get fresh one for each collection
 
             // Write to main operator collection
-            await db.collection(config.stateOperatorCollectionName).insertOne(operatorRecord);
+            await db.collection(config.stateOperatorCollectionName).insertOne({ ...operatorRecord });
 
-            // Write to additional operator collections
-            await db.collection(config.stateOperatorDailyCollectionName).insertOne(operatorRecord);
-            await db.collection(config.stateOperatorWeeklyCollectionName).insertOne(operatorRecord);
-            await db.collection(config.stateOperatorMonthlyCollectionName).insertOne(operatorRecord);
+            // Write to additional operator collections (each needs a fresh _id)
+            delete operatorRecord._id;
+            await db.collection(config.stateOperatorDailyCollectionName).insertOne({ ...operatorRecord });
+
+            delete operatorRecord._id;
+            await db.collection(config.stateOperatorWeeklyCollectionName).insertOne({ ...operatorRecord });
+
+            delete operatorRecord._id;
+            await db.collection(config.stateOperatorMonthlyCollectionName).insertOne({ ...operatorRecord });
           }
         }
       }
@@ -1292,16 +1313,8 @@ class MachineSimulator {
       // Build Running record with assigned operators
       const targetConfig = this.machineConfig;
 
-      // Build items array with correct cardinality
-      let itemsArr;
-      if (this.isSpf()) {
-        // exactly four entries (or fewer if DB has <4)
-        itemsArr = this.currentItems.map(i => ({ id: i.number, count: 0 }));
-        //while (itemsArr.length < 4) itemsArr.push({ id: this.currentItems[0].number, count: 0 }); // pad to 4 if needed
-      } else {
-        // exactly one entry for all non-SPF machines
-        itemsArr = [{ id: this.currentItem.number, count: 0 }];
-      }
+      // Build items array with full details (name, standard) for schema compliance
+      const itemsArr = this.buildCurrentItemsArray(); // Returns full item details
 
       record = {
         timestamp: new Date(),
@@ -1317,7 +1330,7 @@ class MachineSimulator {
           accountNumber: 0,
           speed: 0,
           stations: targetConfig.lanes,
-          items: itemsArr                 // ✅ now an ARRAY with correct cardinality
+          items: itemsArr                 // ✅ Full item details (id, name, standard)
         },
         operators: assignedOperators,
         status: { code: 1, name: "Run", softrolColor: "Green" }
@@ -1345,6 +1358,16 @@ class MachineSimulator {
         })()
         : { code: 0, name: "Timeout", softrolColor: "Grey" };
 
+      // Build items array with full details for schema compliance
+      let itemsArr;
+      try {
+        itemsArr = this.buildCurrentItemsArray(); // Full item details
+      } catch (e) {
+        // Fallback if items not ready
+        console.warn(`[${this.getTimestamp()}] ⚠️ Could not build items array: ${e.message}, using fallback`);
+        itemsArr = [{ id: 26, name: 'Fallback Item', standard: 1800 }];
+      }
+
       record = {
         timestamp: new Date(),
         machine: {
@@ -1359,9 +1382,7 @@ class MachineSimulator {
           accountNumber: 0,
           speed: 0,
           stations: targetConfig.lanes,
-          items: this.isSpf()
-            ? (this.currentItems.length ? this.currentItems.map(i => ({ id: i.number, count: 0 })) : [{ id: 26, count: 0 }, { id: 26, count: 0 }, { id: 26, count: 0 }, { id: 26, count: 0 }])
-            : (this.currentItem ? [{ id: this.currentItem.number, count: 0 }] : [{ id: 26, count: 0 }])
+          items: itemsArr  // ✅ Full item details (id, name, standard)
         },
         operators: prev?.operators ?? [],
         status
@@ -1389,36 +1410,60 @@ class MachineSimulator {
 
     const db = this.client.db(this.dbName);
 
-    // ⭐ PHASE 1: Validate state object (non-breaking)
-    schemaValidator.validate('state', record, {
+    // ⭐ PHASE 3: Fetch existing ticker document before adapting (preserves additional fields)
+    const tickerCollection = db.collection(config.stateTickerCollectionName);
+    const existingTicker = await tickerCollection.findOne(
+      { "machine.serial": this.machineConfig.serial }
+    );
+
+    // Add existing ticker to record for preservation
+    if (existingTicker) {
+      record._tickerDoc = existingTicker;
+    }
+
+    // ⭐ PHASE 3: Adapt state to schema-compliant format (now includes _tickerDoc)
+    const adaptedRecord = schemaAdapters.adaptState(record);
+
+    // Validate adapted state
+    schemaValidator.validate('state', adaptedRecord, {
       machineSerial: this.machineConfig.serial,
       stateType
     });
 
-    // Write to main state-machine collection
-    await db.collection(this.collectionName).insertOne(record);
+    // Write to main state-machine collection (using adapted record)
+    await db.collection(this.collectionName).insertOne(adaptedRecord);
 
-    // Write to additional state collections (simple data copying)
-    await db.collection(config.stateMachineDailyCollectionName).insertOne(record);
-    await db.collection(config.stateMachineWeeklyCollectionName).insertOne(record);
-    await db.collection(config.stateMachineMonthlyCollectionName).insertOne(record);
-    delete record._id;
+    // Write to additional state collections (using adapted record, remove _id first)
+    const adaptedRecordCopy1 = JSON.parse(JSON.stringify(adaptedRecord));
+    delete adaptedRecordCopy1._id;
+    await db.collection(config.stateMachineDailyCollectionName).insertOne(adaptedRecordCopy1);
 
-    // Write operator-specific records to operator collections
-    await this.writeOperatorStateRecords(record);
+    const adaptedRecordCopy2 = JSON.parse(JSON.stringify(adaptedRecord));
+    delete adaptedRecordCopy2._id;
+    await db.collection(config.stateMachineWeeklyCollectionName).insertOne(adaptedRecordCopy2);
 
-    // Update state ticker
-    await db.collection(config.stateTickerCollectionName).updateOne(
-      { "machine.serial": record.machine.serial },
-      { $set: record },
+    const adaptedRecordCopy3 = JSON.parse(JSON.stringify(adaptedRecord));
+    delete adaptedRecordCopy3._id;
+    await db.collection(config.stateMachineMonthlyCollectionName).insertOne(adaptedRecordCopy3);
+
+    // Write operator-specific records to operator collections (using adapted record)
+    await this.writeOperatorStateRecords(adaptedRecord);
+
+    // Update state ticker (using adapted record, query by machine.id since adapted)
+    const adaptedRecordForTicker = JSON.parse(JSON.stringify(adaptedRecord));
+    delete adaptedRecordForTicker._id;
+    delete adaptedRecordForTicker._tickerDoc; // Remove _tickerDoc from what we write (it's metadata)
+    await tickerCollection.updateOne(
+      { "machine.id": adaptedRecord.machine.id },  // Query by machine.id (adapted format)
+      { $set: adaptedRecordForTicker },
       { upsert: true }
     );
 
     if (stateType === "Running") {
-      this.currentRunningState = record;                // only update on Running
+      this.currentRunningState = record;                // Keep original record (has operator.station)
       record.operators.forEach((op) => {
         if (require('./utils').isValidOperatorId(op.id)) {
-          this.simulateStationCounts(record, op.station, op);
+          this.simulateStationCounts(record, op.station, op);  // Use original record with station
         }
       });
     }
@@ -1454,11 +1499,12 @@ class MachineSimulator {
         activeStations: ops.length
       };
 
+      // Insert fault session (raw format, not adapted)
       const res = await coll.insertOne(doc);
       this.currentFaultSessionId = res.insertedId;
       console.log(`[${this.getTimestamp()}] 🚨 Started fault session ${res.insertedId}`);
-      
-      // ⭐ Push to in-memory cache array
+
+      // Push session to in-memory cache array
       doc._id = res.insertedId;
       this.cachedFaultSessions.push(doc);
       
@@ -1638,17 +1684,18 @@ class MachineSimulator {
         if (!isMisfeed) {
           // Include current item information
           if (this.isSpf()) {
+            const randItem = this.currentItems[Math.floor(Math.random() * 4)];
             countRecord.item = {
-              id: this.currentItems[Math.floor(Math.random() * 4)].number,
-              name: this.currentItems[Math.floor(Math.random() * 4)].name,
-              standard: this.currentItems[Math.floor(Math.random() * 4)].standard
+              id: (randItem.number ?? randItem.id),
+              name: randItem.name,
+              standard: randItem.standard
             };
             timing = calculateItemTiming(itemForThisStation);
             let randomExponential = Math.min(1, ((Math.log(1 - Math.random()) / (-1 * rateParam)) / 5));
             delayMs = ((randomExponential * (timing.highRange - timing.lowRange)) + timing.lowRange) * 1000;
           } else {
             countRecord.item = {
-              id: itemForThisStation.number,
+              id: (itemForThisStation.number ?? itemForThisStation.id),
               name: itemForThisStation.name,
               standard: itemForThisStation.standard
             };
@@ -1659,9 +1706,9 @@ class MachineSimulator {
           // Attach item to misfeed so item-session can account for it
           if (this.isSpf()) {
             const it = this.currentItems[Math.floor(Math.random() * 4)];
-            countRecord.item = { id: it.number, name: it.name, standard: it.standard };
+            countRecord.item = { id: (it.number ?? it.id), name: it.name, standard: it.standard };
           } else {
-            countRecord.item = { id: itemForThisStation.number, name: itemForThisStation.name, standard: itemForThisStation.standard };
+            countRecord.item = { id: (itemForThisStation.number ?? itemForThisStation.id), name: itemForThisStation.name, standard: itemForThisStation.standard };
           }
         }
 
@@ -1694,7 +1741,7 @@ class MachineSimulator {
         await db.collection(config.countMonthlyCollectionName).insertOne(adaptedRecord);
 
         await db.collection(config.stateTickerCollectionName).updateOne(
-          { "machine.serial": countRecord.machine.serial },
+          { "machine.id": adaptedRecord.machine.id },  // Using adapted record's machine.id
           { $set: { timestamp: new Date() } }
         );
 

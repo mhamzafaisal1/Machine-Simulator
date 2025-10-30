@@ -227,11 +227,15 @@ function createDefaultShift() {
 function adaptCount(count, options = {}) {
   const timestamps = createTimestamps(count.timestamp || new Date());
 
+  // For counts, operator might have station field - preserve it temporarily
+  const adaptedOperator = adaptOperatorSimple(count.operator);
+  // Note: station is tracked separately in count.station, not on operator
+
   return {
     timestamps: timestamps,
     machine: adaptMachineSimple(count.machine),
     program: adaptProgram(count.program),
-    operator: adaptOperatorSimple(count.operator),
+    operator: adaptedOperator,
     item: adaptItemSimple(count.item),
     shift: options.shift || createDefaultShift(),
     lane: count.lane,
@@ -287,9 +291,10 @@ function adaptMachineSimple(machine) {
 /**
  * Simple operator adapter (for nested objects)
  * @param {Object} operator - Operator object
+ * @param {Object} options - Optional settings
  * @returns {Object} Adapted operator
  */
-function adaptOperatorSimple(operator) {
+function adaptOperatorSimple(operator, options = {}) {
   let nameObj;
   if (typeof operator.name === 'string') {
     const parts = operator.name.trim().split(/\s+/);
@@ -301,13 +306,77 @@ function adaptOperatorSimple(operator) {
     nameObj = operator.name;
   }
 
-  return {
+  const adapted = {
     id: operator.id || operator.code,
     name: nameObj,
     active: true,
     timestamps: createTimestamps(new Date())
-    // Note: station removed as it's not in operator schema
   };
+
+  // For state operators, preserve station field (needed for simulation to continue)
+  if (options.preserveStation && operator.station !== undefined) {
+    adapted.station = operator.station;
+  }
+
+  return adapted;
+}
+
+/**
+ * Adapt operator from database to schema format
+ * Handles DB operators with fields like code, rate, groups
+ * @param {Object} operator - Operator object from database
+ * @returns {Object} Schema-adapted operator object
+ */
+function adaptOperatorFromDB(operator) {
+  // Parse operator name into first/surname
+  let nameObj;
+  if (typeof operator.name === 'string') {
+    const parts = operator.name.trim().split(/\s+/);
+    nameObj = {
+      first: parts[0] || 'Unknown',
+      surname: parts.slice(1).join(' ') || ''
+    };
+  } else {
+    nameObj = operator.name;
+  }
+
+  const adapted = {
+    id: operator.id || operator.code,
+    active: operator.active !== undefined ? operator.active : true,
+    timestamps: createTimestamps(new Date()),
+    name: nameObj
+  };
+
+  // Handle optional groups object (area, category, department)
+  if (operator.area || operator.category || operator.department) {
+    adapted.groups = {};
+    if (operator.area) adapted.groups.area = String(operator.area);
+    if (operator.category) adapted.groups.category = String(operator.category);
+    if (operator.department) adapted.groups.department = String(operator.department);
+  }
+
+  // Store original values as non-enumerable properties (won't be validated but accessible)
+  Object.defineProperty(adapted, '_originalCode', {
+    value: operator.code,
+    enumerable: false,
+    writable: false
+  });
+
+  Object.defineProperty(adapted, '_originalName', {
+    value: operator.name,
+    enumerable: false,
+    writable: false
+  });
+
+  if (operator.rate !== undefined) {
+    Object.defineProperty(adapted, '_rate', {
+      value: operator.rate,
+      enumerable: false,
+      writable: false
+    });
+  }
+
+  return adapted;
 }
 
 /**
@@ -325,6 +394,283 @@ function adaptItemSimple(item) {
   };
 }
 
+/**
+ * Adapt item from database to schema format
+ * Handles DB items with fields like number, area, department, weight
+ * @param {Object} item - Item object from database
+ * @returns {Object} Schema-adapted item object
+ */
+function adaptItemFromDB(item) {
+  const adapted = {
+    id: item.id || item.number,
+    active: item.active !== undefined ? item.active : true,
+    timestamps: createTimestamps(new Date()),
+    name: item.name,
+    standard: item.standard
+  };
+
+  // Handle optional groups object (area, category, department)
+  if (item.area || item.category || item.department) {
+    adapted.groups = {};
+    if (item.area) adapted.groups.area = String(item.area);
+    if (item.category) adapted.groups.category = String(item.category);
+    if (item.department) adapted.groups.department = String(item.department);
+  }
+
+  // Handle optional weight object
+  if (item.weight && typeof item.weight === 'object' && item.weight.value !== undefined) {
+    adapted.weight = {
+      value: item.weight.value,
+      unit: item.weight.unit || 'gram',
+      per: item.weight.per || 1
+    };
+  }
+
+  // Handle optional machineTypes array
+  if (item.machineTypes && Array.isArray(item.machineTypes)) {
+    adapted.machineTypes = item.machineTypes;
+  }
+
+  // Store original 'number' as non-enumerable property (won't be validated but accessible)
+  Object.defineProperty(adapted, '_originalNumber', {
+    value: item.number,
+    enumerable: false,
+    writable: false
+  });
+
+  return adapted;
+}
+
+/**
+ * Adapt fault from database to schema format
+ * @param {Object} fault - Fault object from database (e.g., { code, name, jam })
+ * @returns {Object} Schema-adapted fault object
+ */
+function adaptFaultFromDB(fault) {
+  const id = Number(fault?.code ?? fault?.id ?? 0);
+  const name = fault?.name || fault?.description || 'Fault';
+  const jam = Number(fault?.jam ?? 0);
+
+  return {
+    id,
+    active: fault?.active !== undefined ? !!fault.active : true,
+    timestamps: createTimestamps(new Date()),
+    name,
+    jam,
+    ...(fault?.softrolColor ? { softrolColor: String(fault.softrolColor) } : {})
+  };
+}
+
+/**
+ * Adapt state object to schema format
+ * @param {Object} state - Current state object
+ * @param {Object} options - Additional options
+ * @returns {Object} Schema-adapted state object
+ */
+function adaptState(state, options = {}) {
+  const timestamps = createTimestamps(state.timestamp || new Date());
+
+  // Adapt operators array (station is preserved in original record, not in adapted version)
+  const adaptedOperators = state.operators ? state.operators.map(op => {
+    return adaptOperatorSimple(op);
+  }) : [];
+
+  // Determine if SPF (multiple items) or single item
+  let itemsForState = [];
+  let itemForState = null;
+
+  if (state.program && state.program.items && Array.isArray(state.program.items) && state.program.items.length > 1) {
+    // SPF machine - use items array
+    itemsForState = state.program.items
+      .filter(item => item.id || item.number) // Filter out count-only entries
+      .map(item => adaptItemSimple(item));
+  } else if (state.program && state.program.items && state.program.items.length === 1) {
+    // Single item machine
+    const item = state.program.items[0];
+    if (item.name && item.standard) {
+      itemForState = adaptItemSimple(item);
+    }
+  }
+
+  // Build state object based on item structure
+  const stateObj = {
+    timestamps: timestamps,
+    machine: adaptMachineSimple(state.machine),
+    lanes: state.program?.stations || 1,
+    program: adaptProgram(state.program || {}),
+    operators: adaptedOperators,
+    shift: options.shift || createDefaultShift(),
+    stations: state.operators ? state.operators.map(op => op.station).filter(s => s) : []
+  };
+
+  // Only add session_id if it exists (optional field)
+  if (state.session_id) {
+    stateObj.session_id = String(state.session_id);
+  }
+
+  // Add either item or items based on structure
+  if (itemsForState.length > 0) {
+    stateObj.items = itemsForState;
+  } else if (itemForState) {
+    stateObj.item = itemForState;
+  } else {
+    // Fallback - create minimal item
+    stateObj.item = {
+      id: 1,
+      name: 'Unknown',
+      standard: 0,
+      active: true,
+      timestamps: createTimestamps(new Date())
+    };
+  }
+
+  // Preserve _tickerDoc if present (critical for atomic updates)
+  if (state._tickerDoc) {
+    stateObj._tickerDoc = state._tickerDoc;
+  }
+
+  return stateObj;
+}
+
+/**
+ * Adapt status object (for states)
+ * @param {Object} status - Status object with code, name, softrolColor
+ * @returns {Object} Adapted status object
+ */
+function adaptStatus(status) {
+  if (!status) {
+    return {
+      code: 0,
+      name: 'Unknown',
+      color: 'grey'
+    };
+  }
+
+  return {
+    code: status.code,
+    name: status.name,
+    color: status.softrolColor || status.color || 'grey'
+  };
+}
+
+/**
+ * Adapt session object (machine/operator/item/fault sessions)
+ */
+function adaptSession(session, options = {}) {
+  const sessionType = options.sessionType || 'machine';
+
+  // Create timestamps with start/end
+  const timestamps = session.timestamps?.start
+    ? (session.timestamps?.end
+      ? createSessionTimestampsWithEnd(session.timestamps.start, session.timestamps.end)
+      : createSessionTimestamps(session.timestamps.start))
+    : createSessionTimestamps(new Date());
+
+  // Adapt states structure: {start, array, end} instead of array
+  const statesObj = {
+    start: session.startState ? adaptState(session.startState) : adaptState(session.states?.[0] || {}),
+    array: []
+  };
+
+  // Add middle states to array
+  if (Array.isArray(session.states) && session.states.length > 1) {
+    statesObj.array = session.states.slice(1, session.endState ? -1 : session.states.length)
+      .map(s => adaptState(s));
+  }
+
+  // Add end state if exists
+  if (session.endState) {
+    statesObj.end = adaptState(session.endState);
+  }
+
+  // Adapt counts structure: {valid, misfeed} instead of separate arrays
+  const countsObj = {
+    valid: (session.counts || []).map(c => adaptCount(c, options)),
+    misfeed: (session.misfeeds || []).map(m => adaptMisfeed(m, options))
+  };
+
+  // Adapt machine (with full details)
+  const machineObj = {
+    id: session.machine?.serial || session.machine?.id,
+    name: session.machine?.name || 'Unknown',
+    active: session.machine?.active !== undefined ? session.machine.active : true,
+    ipAddress: parseIPAddress(session.machine?.ipAddress || '192.168.0.1'),
+    lanes: session.machine?.lanes || 1,
+    type: session.machine?.type || 'Unknown',
+    polled: session.machine?.polled !== undefined ? session.machine.polled : true,
+    timestamps: createTimestamps(new Date())
+  };
+
+  // Build adapted session (only schema-required fields)
+  // Build metrics with proper nested structure
+  const metricsObj = {
+    totals: {
+      counts: {
+        valid: session.totalCount || 0,
+        misfeed: session.misfeedCount || 0
+      },
+      timeCredit: session.totalTimeCredit || 0
+    },
+    byItem: {
+      items: [],
+      timeCredit: [],
+      counts: {
+        valid: [],
+        misfeed: []
+      }
+    },
+    timers: {
+      runtime: session.runtime || 0,
+      workTime: session.workTime || 0,
+      activeStations: session.activeStations || 0
+    }
+  };
+
+  // Populate byItem arrays if session has item-level data
+  if (session.items && Array.isArray(session.items)) {
+    metricsObj.byItem.items = session.items.map(i => adaptItemSimple(i));
+    // Initialize arrays with zeros for each item
+    metricsObj.byItem.timeCredit = session.items.map(() => 0);
+    metricsObj.byItem.counts.valid = session.items.map(() => 0);
+    metricsObj.byItem.counts.misfeed = session.items.map(() => 0);
+  } else if (session.item) {
+    metricsObj.byItem.items = [adaptItemSimple(session.item)];
+    metricsObj.byItem.timeCredit = [0];
+    metricsObj.byItem.counts.valid = [session.totalCount || 0];
+    metricsObj.byItem.counts.misfeed = [session.misfeedCount || 0];
+  }
+
+  const adapted = {
+    timestamps,
+    machine: machineObj,
+    metrics: metricsObj,
+    program: adaptProgram(session.program || {}),
+    states: statesObj,
+    counts: countsObj,
+    shift: options.shift || createDefaultShift()
+  };
+
+  // Handle item/items
+  if (session.items && Array.isArray(session.items) && session.items.length > 1) {
+    adapted.items = session.items.map(i => adaptItemSimple(i));
+  } else if (session.item) {
+    adapted.item = adaptItemSimple(session.item);
+  } else if (session.items && session.items.length === 1) {
+    adapted.item = adaptItemSimple(session.items[0]);
+  }
+
+  // Handle operator/operators
+  if (session.operators && Array.isArray(session.operators) && session.operators.length > 1) {
+    adapted.operators = session.operators.map(o => adaptOperatorSimple(o));
+  } else if (session.operator) {
+    adapted.operator = adaptOperatorSimple(session.operator);
+  } else if (session.operators && session.operators.length === 1) {
+    adapted.operator = adaptOperatorSimple(session.operators[0]);
+  }
+
+  return adapted;
+}
+
 module.exports = {
   createTimestamps,
   createSessionTimestamps,
@@ -333,10 +679,17 @@ module.exports = {
   adaptMachineSimple,
   adaptOperator,
   adaptOperatorSimple,
+  adaptOperatorFromDB,
   adaptItem,
   adaptItemSimple,
+  adaptItemFromDB,
   adaptProgram,
   adaptCount,
   adaptMisfeed,
-  createDefaultShift
+  adaptState,
+  adaptStatus,
+  adaptSession,
+  createDefaultShift,
+  parseIPAddress,
+  adaptFaultFromDB
 };

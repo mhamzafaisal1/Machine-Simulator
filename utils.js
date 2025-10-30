@@ -29,9 +29,14 @@ async function getOperatorName(db, operatorId) {
     const operatorsCollection = db.collection(config.operatorCollectionName);
     const operator = await operatorsCollection.findOne(
       { code: operatorId },
-      { projection: { name: 1 } }
+      { projection: { name: 1, code: 1, active: 1, area: 1, category: 1, department: 1, rate: 1 } }
     );
-    return operator ? operator.name : "Unknown";
+    if (!operator) return "Unknown";
+
+    // ⭐ Adapt operator to schema format
+    const schemaAdapters = require('./schema-adapters');
+    const adapted = schemaAdapters.adaptOperatorFromDB(operator);
+    return adapted.name_string || adapted.name;
   } catch (error) {
     console.error(`[${new Date().toISOString()}] ❌ Error querying operator name for ID ${operatorId}:`, error.message);
     return "Unknown";
@@ -41,23 +46,25 @@ async function getOperatorName(db, operatorId) {
 // New function to get operator names for multiple operators
 async function getOperatorNames(db, operators) {
   const operatorsWithNames = [];
-  
+
   for (const operator of operators) {
     if (isValidOperatorId(operator.id)) { // Real operator (not dummy or -1)
       const name = await getOperatorName(db, operator.id);
       operatorsWithNames.push({
         ...operator,
-        name: name
+        name: name,
+        name_string: name // Add backward compatibility
       });
     } else {
       // For dummy operators or -1, keep as is
       operatorsWithNames.push({
         ...operator,
-        name: "None"
+        name: "None",
+        name_string: "None"
       });
     }
   }
-  
+
   return operatorsWithNames;
 }
 
@@ -154,7 +161,7 @@ async function loadItems(db) {
   try {
     const itemCollection = db.collection(config.itemCollectionName);
     const items = await itemCollection.find({ active: true }).toArray();
-    
+
     // Validate items
     const validItems = items.filter(item => {
       // Check required fields
@@ -162,22 +169,26 @@ async function loadItems(db) {
         console.warn(`[${new Date().toISOString()}] ⚠️ Skipping item with missing required fields:`, item);
         return false;
       }
-      
+
       // Validate standard field
       if (typeof item.standard !== 'number' || !isFinite(item.standard) || item.standard <= 0) {
         console.warn(`[${new Date().toISOString()}] ⚠️ Skipping item with invalid standard value:`, item);
         return false;
       }
-      
+
       return true;
     });
-    
+
     if (validItems.length === 0) {
       throw new Error('❌ No valid active items found in database');
     }
-    
-    console.log(`[${new Date().toISOString()}] ✅ Loaded ${validItems.length} valid items from database`);
-    return validItems;
+
+    // ⭐ Adapt items to schema format
+    const schemaAdapters = require('./schema-adapters');
+    const adaptedItems = validItems.map(item => schemaAdapters.adaptItemFromDB(item));
+
+    console.log(`[${new Date().toISOString()}] ✅ Loaded ${adaptedItems.length} valid items from database`);
+    return adaptedItems;
   } catch (error) {
     console.error(`[${new Date().toISOString()}] ❌ Error loading items from MongoDB:`, error.message);
     throw error;
