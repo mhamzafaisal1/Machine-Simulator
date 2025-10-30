@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-// fillmore-simulator.js - Main orchestrator for all Fillmore machines-Starting point for the simulation of fillmore machines 
+// fillmore-simulator.js - Main orchestrator for all Fillmore machines-Starting point for the simulation of fillmore machines
 const SimulationManager = require('./process-manager');
 const { validateAllMachines, getActiveMachines } = require('./fillmore-machines');
+const schemaValidator = require('./schema-validator');
 
 class FillmoreSimulator {
   constructor() {
@@ -57,6 +58,11 @@ class FillmoreSimulator {
 
   async stop() {
     console.log('\n🛑 Stopping Fillmore simulator...');
+
+    // ⭐ PHASE 1: Print final validation statistics
+    console.log('\n📊 Final Schema Validation Report:');
+    schemaValidator.printStats();
+
     await this.manager.stopAllMachines();
     console.log('✅ Fillmore simulator stopped');
   }
@@ -86,6 +92,11 @@ class FillmoreSimulator {
     setInterval(() => {
       this.manager.logStatus();
     }, 60000); // Every minute
+
+    // ⭐ PHASE 1: Print validation statistics periodically (every 5 minutes)
+    setInterval(() => {
+      schemaValidator.printStats();
+    }, 300000); // Every 5 minutes
   }
 }
 

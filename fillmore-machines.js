@@ -2,6 +2,7 @@
 const { MongoClient } = require('mongodb');
 const simulatedMachineSchema = require('./schemas/simulatedMachineSchema');
 const config = require('./config');
+const schemaValidator = require('./schema-validator');
 
 // MongoDB connection settings (from centralized config)
 const mongoUri = config.mongoUri;
@@ -111,19 +112,26 @@ function validateMachineConfig(machine) {
 // Validate all machines
 async function validateAllMachines() {
   console.log('🔍 Validating Fillmore machine configurations...');
-  
+
   const machines = await getMachines();
-  
+
   machines.forEach((machine, index) => {
     try {
       validateMachineConfig(machine);
+
+      // ⭐ PHASE 1: Validate machine object against schema (non-breaking)
+      schemaValidator.validate('machine', machine, {
+        machineSerial: machine.serial,
+        machineName: machine.name
+      });
+
       console.log(`✅ Machine ${index + 1}: ${machine.name} (${machine.type}) - ${machine.lanes} lanes - Valid`);
     } catch (error) {
       console.error(`❌ Machine ${index + 1}: ${machine.name} - ${error.message}`);
       throw error;
     }
   });
-  
+
   console.log(`✅ All ${machines.length} machines validated successfully!`);
 }
 

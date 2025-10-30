@@ -3,6 +3,7 @@
 // Eliminates need for database polling by calculating on-demand
 
 const { DateTime } = require('luxon');
+const schemaValidator = require('./schema-validator');
 
 const SYSTEM_TIMEZONE = 'America/Chicago';
 

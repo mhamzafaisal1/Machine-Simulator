@@ -17,6 +17,8 @@ const config = require('./config');
 const {
   recalculateAndUpdateCache
 } = require('./simulator-cache-builder');
+const schemaValidator = require('./schema-validator');
+const schemaAdapters = require('./schema-adapters');
 
 class MachineSimulator {
   constructor(machineConfig) {
@@ -190,6 +192,17 @@ class MachineSimulator {
     this.validFaults = await faultCollection.find().sort({ code: 1 }).toArray();
     console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.validFaults.length} fault types`);
 
+    // ⭐ PHASE 1: Validate loaded faults (non-breaking)
+    let validFaultCount = 0;
+    this.validFaults.forEach(fault => {
+      if (schemaValidator.validate('fault', fault, { faultCode: fault.code })) {
+        validFaultCount++;
+      }
+    });
+    if (validFaultCount > 0) {
+      console.log(`[${this.getTimestamp()}] ✅ ${validFaultCount}/${this.validFaults.length} faults passed schema validation`);
+    }
+
     if (this.validFaults.length < 58) {
       console.warn(`[${this.getTimestamp()}] ⚠️ Only ${this.validFaults.length} fault codes found (expected 58)`);
     }
@@ -198,6 +211,17 @@ class MachineSimulator {
   async loadItems() {
     const db = this.client.db(this.dbName);
     this.items = await loadItems(db);
+
+    // ⭐ PHASE 1: Validate loaded items (non-breaking)
+    let validItemCount = 0;
+    this.items.forEach(item => {
+      if (schemaValidator.validate('item', item, { itemId: item.number })) {
+        validItemCount++;
+      }
+    });
+    if (validItemCount > 0) {
+      console.log(`[${this.getTimestamp()}] ✅ ${validItemCount}/${this.items.length} items passed schema validation`);
+    }
   }
 
   /**
@@ -447,6 +471,12 @@ class MachineSimulator {
       { projection: { _id: 0, code: 1, name: 1, rate: 1 } }
     ).toArray();
 
+    // ⭐ PHASE 1: Validate loaded operators (non-breaking, sample only)
+    if (allValidByRange.length > 0) {
+      const sampleOperator = allValidByRange[0];
+      schemaValidator.validate('operator', sampleOperator, { operatorId: sampleOperator.code });
+    }
+
     for (const station of activeStations) {
       // Find last operator for this machine/station
       const lastAssignment = ticker.find(
@@ -626,6 +656,13 @@ class MachineSimulator {
         totalByItem: currentItems.map(() => 0),
         timeCreditByItem: currentItems.map(() => 0)
       };
+
+      // ⭐ PHASE 1: Validate session object (non-breaking)
+      // Note: Session validation may fail initially as sessions are built incrementally
+      schemaValidator.validate('session', sessionData, {
+        machineSerial: this.machineConfig.serial,
+        sessionType: 'machine'
+      });
 
       // Insert session into database
       const result = await sessionCollection.insertOne(sessionData);
@@ -1352,6 +1389,12 @@ class MachineSimulator {
 
     const db = this.client.db(this.dbName);
 
+    // ⭐ PHASE 1: Validate state object (non-breaking)
+    schemaValidator.validate('state', record, {
+      machineSerial: this.machineConfig.serial,
+      stateType
+    });
+
     // Write to main state-machine collection
     await db.collection(this.collectionName).insertOne(record);
 
@@ -1622,13 +1665,33 @@ class MachineSimulator {
           }
         }
 
-        // Write to main count collection
-        await collection.insertOne(countRecord);
+        // ⭐ PHASE 2: Adapt count/misfeed to schema format
+        let adaptedRecord;
+        if (isMisfeed) {
+          adaptedRecord = schemaAdapters.adaptMisfeed(countRecord);
+          // ⭐ Validate adapted misfeed
+          schemaValidator.validate('misfeed', adaptedRecord, {
+            machineSerial: this.machineConfig.serial,
+            station,
+            operatorId: operator.id
+          });
+        } else {
+          adaptedRecord = schemaAdapters.adaptCount(countRecord);
+          // ⭐ Validate adapted count
+          schemaValidator.validate('count', adaptedRecord, {
+            machineSerial: this.machineConfig.serial,
+            station,
+            operatorId: operator.id
+          });
+        }
 
-        // Write to additional count collections (simple data copying)
-        await db.collection(config.countDailyCollectionName).insertOne(countRecord);
-        await db.collection(config.countWeeklyCollectionName).insertOne(countRecord);
-        await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
+        // Write to main count collection (using adapted record)
+        await collection.insertOne(adaptedRecord);
+
+        // Write to additional count collections (using adapted record)
+        await db.collection(config.countDailyCollectionName).insertOne(adaptedRecord);
+        await db.collection(config.countWeeklyCollectionName).insertOne(adaptedRecord);
+        await db.collection(config.countMonthlyCollectionName).insertOne(adaptedRecord);
 
         await db.collection(config.stateTickerCollectionName).updateOne(
           { "machine.serial": countRecord.machine.serial },
@@ -1641,16 +1704,16 @@ class MachineSimulator {
             const sessionCollection = db.collection(config.machineSessionCollectionName);
 
             if (isMisfeed) {
-              // Add misfeed to session
+              // Add misfeed to session (using adapted record)
               await sessionCollection.updateOne(
                 { _id: this.currentSessionId },
-                { $push: { misfeeds: countRecord } }
+                { $push: { misfeeds: adaptedRecord } }
               );
             } else {
-              // Add valid count to session
+              // Add valid count to session (using adapted record)
               await sessionCollection.updateOne(
                 { _id: this.currentSessionId },
-                { $push: { counts: countRecord } }
+                { $push: { counts: adaptedRecord } }
               );
             }
 
@@ -1670,9 +1733,9 @@ class MachineSimulator {
           try {
             const opSess = db.collection(config.operatorSessionCollectionName);
             if (isMisfeed) {
-              await opSess.updateOne({ _id: opSessionId }, { $push: { misfeeds: countRecord } });
+              await opSess.updateOne({ _id: opSessionId }, { $push: { misfeeds: adaptedRecord } });
             } else {
-              await opSess.updateOne({ _id: opSessionId }, { $push: { counts: countRecord } });
+              await opSess.updateOne({ _id: opSessionId }, { $push: { counts: adaptedRecord } });
             }
             await this.recalculateOperatorSession(opSessionId);
           } catch (opSessionError) {
@@ -1680,17 +1743,17 @@ class MachineSimulator {
           }
         }
 
-        // Update item-session for the specific item id
-        const itemIdForRecord = countRecord.item?.id;
+        // Update item-session for the specific item id (use adapted record's item)
+        const itemIdForRecord = adaptedRecord.item?.id;
         if (itemIdForRecord) {
           const itemSessId = this.itemSessionIdsByItem.get(itemIdForRecord);
           if (itemSessId) {
             try {
               const itemColl = db.collection(config.itemSessionCollectionName);
               if (isMisfeed) {
-                await itemColl.updateOne({ _id: itemSessId }, { $push: { misfeeds: countRecord } });
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { misfeeds: adaptedRecord } });
               } else {
-                await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: countRecord } });
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: adaptedRecord } });
               }
               await this.recalculateItemSession(itemSessId);
             } catch (itemSessionError) {
