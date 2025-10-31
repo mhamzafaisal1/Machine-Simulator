@@ -654,8 +654,8 @@ class MachineSimulator {
         }
       }
 
-      // Create initial session object
-      const sessionData = {
+      // Create initial session object (raw format)
+      const rawSessionData = {
         timestamps: {
           start: runningState.timestamp
         },
@@ -679,16 +679,28 @@ class MachineSimulator {
         timeCreditByItem: currentItems.map(() => 0)
       };
 
-      // Insert session into database (raw format, not adapted - sessions are too complex for Phase 3/4)
-      const result = await sessionCollection.insertOne(sessionData);
+      // ⭐ PHASE 4: Adapt session to schema format before insert
+      const adaptedSession = schemaAdapters.adaptSession(rawSessionData, {
+        sessionType: 'machine',
+        shift: schemaAdapters.createDefaultShift()
+      });
+
+      // Validate adapted session (non-breaking)
+      schemaValidator.validate('session', adaptedSession, {
+        machineSerial: this.machineConfig.id || this.machineConfig.serial,
+        sessionType: 'machine'
+      });
+
+      // Insert adapted session into database
+      const result = await sessionCollection.insertOne(adaptedSession);
       this.currentSessionId = result.insertedId;
       this.currentSessionStartTime = runningState.timestamp;
 
       console.log(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
 
-      // Push session to in-memory cache array
-      sessionData._id = result.insertedId;
-      this.cachedMachineSessions.push(sessionData);
+      // Push adapted session to in-memory cache array
+      adaptedSession._id = result.insertedId;
+      this.cachedMachineSessions.push(adaptedSession);
       
       // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
 
@@ -857,9 +869,11 @@ class MachineSimulator {
         : 0;
       const workTime = runtime * activeStations;
 
-      // Calculate total counts
-      const totalCount = session.counts.length;
-      const misfeedCount = session.misfeeds.length;
+      // Calculate total counts (adapted sessions have counts as object with valid/misfeed arrays)
+      const countsValid = session.counts?.valid || [];
+      const countsMisfeed = session.counts?.misfeed || [];
+      const totalCount = countsValid.length;
+      const misfeedCount = countsMisfeed.length;
 
       // Time-credit normalization (PPM→PPH)
       const normalizePPH = (std) => {
@@ -872,9 +886,12 @@ class MachineSimulator {
       const totalByItem = [];
       const timeCreditByItem = [];
 
-      if (session.items.length === 1) {
+      // Handle adapted session format: either session.item (single) or session.items (array)
+      const sessionItems = session.items || (session.item ? [session.item] : []);
+
+      if (sessionItems.length === 1) {
         // Single item type - simple calculation
-        const item = session.items[0];
+        const item = sessionItems[0];
         const pph = normalizePPH(item.standard);
         if (pph > 0) {
           totalTimeCredit = totalCount / (pph / 3600);
@@ -889,7 +906,7 @@ class MachineSimulator {
         const itemTypeCounts = {};
 
         // Group counts by item type
-        for (const count of session.counts) {
+        for (const count of countsValid) {
           const itemId = count.item?.id;
           if (itemId) {
             itemTypeCounts[itemId] = (itemTypeCounts[itemId] || 0) + 1;
@@ -897,7 +914,7 @@ class MachineSimulator {
         }
 
         // Calculate totals and time credits for each item in the session items array
-        for (const item of session.items) {
+        for (const item of sessionItems) {
           const countTotal = itemTypeCounts[item.id] || 0;
           const pph = normalizePPH(item.standard);
 
@@ -1744,16 +1761,16 @@ class MachineSimulator {
             const sessionCollection = db.collection(config.machineSessionCollectionName);
 
             if (isMisfeed) {
-              // Add misfeed to session (using adapted record)
+              // ⭐ PHASE 4: Schema-adapted sessions have counts as object with valid/misfeed arrays
               await sessionCollection.updateOne(
                 { _id: this.currentSessionId },
-                { $push: { misfeeds: adaptedRecord } }
+                { $push: { 'counts.misfeed': adaptedRecord } }
               );
             } else {
-              // Add valid count to session (using adapted record)
+              // ⭐ PHASE 4: Schema-adapted sessions have counts as object with valid/misfeed arrays
               await sessionCollection.updateOne(
                 { _id: this.currentSessionId },
-                { $push: { counts: adaptedRecord } }
+                { $push: { 'counts.valid': adaptedRecord } }
               );
             }
 
