@@ -237,7 +237,7 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
       
       const db = this.client.db(this.dbName);
-      const machineSerial = this.machineConfig.serial;
+      const machineSerial = this.machineConfig.id || this.machineConfig.serial;
       
       // Calculate today's start (midnight in America/Chicago timezone)
       const SYSTEM_TIMEZONE = 'America/Chicago';
@@ -331,7 +331,7 @@ class MachineSimulator {
       // Recalculate and update cache using in-memory session arrays
       const result = await recalculateAndUpdateCache({
         db,
-        machineSerial: this.machineConfig.serial,
+        machineSerial: this.machineConfig.id || this.machineConfig.serial,
         machineName: this.machineConfig.name,
         machineSessions: this.cachedMachineSessions,
         faultSessions: this.cachedFaultSessions,
@@ -462,7 +462,7 @@ class MachineSimulator {
     const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
     const operatorsCollection = db.collection(config.operatorCollectionName);
     const activeStations = getActiveStations(this.machineConfig);
-    const machineSerial = this.machineConfig.serial;
+    const machineSerial = this.machineConfig.id || this.machineConfig.serial;
     const assignedOperators = [];
 
     // Read current occupancy ("ticker")
@@ -605,7 +605,7 @@ class MachineSimulator {
 
   async cleanupOperatorAssignments() {
     const db = this.client.db(this.dbName);
-    const machineSerial = this.machineConfig.serial;
+    const machineSerial = this.machineConfig.id || this.machineConfig.serial;
     const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
 
     try {
@@ -1129,7 +1129,7 @@ class MachineSimulator {
       const coll = db.collection(config.operatorSessionCollectionName);
 
       const filter = {
-        "machine.serial": this.machineConfig.serial,
+        "machine.id": this.machineConfig.id || this.machineConfig.serial,
         "timestamps.end": { $exists: false }
       };
 
@@ -1318,11 +1318,7 @@ class MachineSimulator {
 
       record = {
         timestamp: new Date(),
-        machine: {
-          serial: targetConfig.serial,
-          name: targetConfig.name,
-          ipAddress: targetConfig.ipAddress
-        },
+        machine: targetConfig, // Pass entire adapted machine config
         program: {
           mode: "smallPiece",
           programNumber: 1,
@@ -1370,11 +1366,7 @@ class MachineSimulator {
 
       record = {
         timestamp: new Date(),
-        machine: {
-          serial: targetConfig.serial,
-          name: targetConfig.name,
-          ipAddress: targetConfig.ipAddress
-        },
+        machine: targetConfig, // Pass entire adapted machine config
         program: prev?.program ?? {
           mode: "smallPiece",
           programNumber: 1,
@@ -1413,7 +1405,7 @@ class MachineSimulator {
     // ⭐ PHASE 3: Fetch existing ticker document before adapting (preserves additional fields)
     const tickerCollection = db.collection(config.stateTickerCollectionName);
     const existingTicker = await tickerCollection.findOne(
-      { "machine.serial": this.machineConfig.serial }
+      { "machine.id": this.machineConfig.id || this.machineConfig.serial }
     );
 
     // Add existing ticker to record for preservation
@@ -1424,9 +1416,10 @@ class MachineSimulator {
     // ⭐ PHASE 3: Adapt state to schema-compliant format (now includes _tickerDoc)
     const adaptedRecord = schemaAdapters.adaptState(record);
 
-    // Validate adapted state
-    schemaValidator.validate('state', adaptedRecord, {
-      machineSerial: this.machineConfig.serial,
+    // Validate adapted state (exclude _tickerDoc for validation as it's for internal use only)
+    const { _tickerDoc, ...recordForValidation } = adaptedRecord;
+    schemaValidator.validate('state', recordForValidation, {
+      machineSerial: this.machineConfig.id || this.machineConfig.serial,
       stateType
     });
 
@@ -1718,7 +1711,7 @@ class MachineSimulator {
           adaptedRecord = schemaAdapters.adaptMisfeed(countRecord);
           // ⭐ Validate adapted misfeed
           schemaValidator.validate('misfeed', adaptedRecord, {
-            machineSerial: this.machineConfig.serial,
+            machineSerial: this.machineConfig.id || this.machineConfig.serial,
             station,
             operatorId: operator.id
           });
@@ -1726,7 +1719,7 @@ class MachineSimulator {
           adaptedRecord = schemaAdapters.adaptCount(countRecord);
           // ⭐ Validate adapted count
           schemaValidator.validate('count', adaptedRecord, {
-            machineSerial: this.machineConfig.serial,
+            machineSerial: this.machineConfig.id || this.machineConfig.serial,
             station,
             operatorId: operator.id
           });

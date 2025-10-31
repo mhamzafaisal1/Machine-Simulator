@@ -94,7 +94,7 @@ function adaptMachine(machineConfig) {
     ? parseIPAddress(machineConfig.ipAddress)
     : machineConfig.ipAddress;
 
-  return {
+  const adapted = {
     id: machineConfig.serial, // Map serial to id
     name: machineConfig.name,
     active: machineConfig.active !== undefined ? machineConfig.active : true,
@@ -107,6 +107,19 @@ function adaptMachine(machineConfig) {
       ? machineConfig.groups
       : {} // Schema expects object, not array
   };
+
+  // Schema expects 'stations' as integer (count), but simulator uses array
+  // Store both: stations (integer count for schema) and _stationsArray (array for simulator)
+  if (machineConfig.stations && Array.isArray(machineConfig.stations)) {
+    adapted.stations = machineConfig.stations.length; // Store count as integer for schema
+    Object.defineProperty(adapted, '_stationsArray', {
+      value: machineConfig.stations,
+      enumerable: false,
+      writable: false
+    });
+  }
+
+  return adapted;
 }
 
 /**
@@ -277,14 +290,14 @@ function adaptMachineSimple(machine) {
     : machine.ipAddress;
 
   return {
-    id: machine.serial || machine.id,
+    id: machine.id || machine.serial, // Prefer id (adapted machines) over serial (legacy)
     name: machine.name,
-    active: true,
+    active: machine.active !== undefined ? machine.active : true,
     ipAddress: ipAddress,
     lanes: machine.lanes || 1,
     type: machine.type || 'Unknown',
-    polled: true,
-    timestamps: createTimestamps(new Date())
+    polled: machine.polled !== undefined ? machine.polled : true,
+    timestamps: machine.timestamps || createTimestamps(new Date())
   };
 }
 

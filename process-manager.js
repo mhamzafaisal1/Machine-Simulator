@@ -45,8 +45,9 @@ class SimulationManager {
   }
 
   async spawnMachine(machineConfig) {
-    const machineSerial = machineConfig.serial;
-    
+    // Machines are now adapted: 'serial' is now 'id', with '_originalSerial' as backup
+    const machineSerial = machineConfig.id || machineConfig._originalSerial || machineConfig.serial;
+
     if (this.workers.has(machineSerial)) {
       console.log(`⚠️  Machine ${machineConfig.name} (${machineSerial}) is already running`);
       return;

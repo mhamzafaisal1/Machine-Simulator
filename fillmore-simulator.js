@@ -36,7 +36,9 @@ class FillmoreSimulator {
       // Show lanes information
       console.log('\n🏭 Machine Lanes Configuration:');
       activeMachines.forEach(machine => {
-        console.log(`   ${machine.name}: ${machine.lanes} lane(s) - Stations: [${machine.stations.join(', ')}]`);
+        // Use _stationsArray if available, otherwise generate from lanes
+        const stationsArray = machine._stationsArray || Array.from({length: machine.lanes}, (_, i) => i + 1);
+        console.log(`   ${machine.name}: ${machine.lanes} lane(s) - Stations: [${stationsArray.join(', ')}]`);
       });
       
       console.log('\n🚀 Starting all machines...');

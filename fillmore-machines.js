@@ -3,6 +3,7 @@ const { MongoClient } = require('mongodb');
 const simulatedMachineSchema = require('./schemas/simulatedMachineSchema');
 const config = require('./config');
 const schemaValidator = require('./schema-validator');
+const schemaAdapters = require('./schema-adapters');
 
 // MongoDB connection settings (from centralized config)
 const mongoUri = config.mongoUri;
@@ -52,7 +53,7 @@ async function fetchMachinesFromMongoDB() {
     
     // Fetch all machines
     const machines = await collection.find({active:true}).toArray();
-    
+
     // Transform MongoDB data to match our expected format
     const transformedMachines = machines.map(machine => ({
       serial: machine.serial,
@@ -64,9 +65,21 @@ async function fetchMachinesFromMongoDB() {
       type: getMachineTypeFromName(machine.name),
       groups: machine.groups || []
     }));
-    
-    console.log(`📋 Fetched ${transformedMachines.length} machines from MongoDB`);
-    return transformedMachines;
+
+    // ⭐ Adapt machines to schema format
+    const adaptedMachines = transformedMachines.map(machine => {
+      const adapted = schemaAdapters.adaptMachine(machine);
+      // Store original serial as non-enumerable property for backward compatibility
+      Object.defineProperty(adapted, '_originalSerial', {
+        value: machine.serial,
+        enumerable: false,
+        writable: false
+      });
+      return adapted;
+    });
+
+    console.log(`📋 Fetched ${adaptedMachines.length} machines from MongoDB`);
+    return adaptedMachines;
     
   } catch (error) {
     console.error('❌ Error fetching machines from MongoDB:', error.message);
@@ -94,18 +107,19 @@ async function getMachines() {
 
 // Helper function to validate machine configuration against schema
 function validateMachineConfig(machine) {
-  // Basic validation - in production you'd use a proper JSON schema validator
-  const required = simulatedMachineSchema.required;
+  // Basic validation for adapted machines (serial is now id)
+  const required = ['id', 'name', 'active', 'ipAddress', 'lanes', 'type'];
   for (const field of required) {
     if (!(field in machine)) {
       throw new Error(`Missing required field: ${field}`);
     }
   }
-  
-  if (!simulatedMachineSchema.properties.type.enum.includes(machine.type)) {
+
+  const validTypes = ['SPF', 'LPL', 'Blanket', 'SPL', 'Unknown'];
+  if (!validTypes.includes(machine.type)) {
     throw new Error(`Invalid machine type: ${machine.type}`);
   }
-  
+
   return true;
 }
 
@@ -114,16 +128,19 @@ async function validateAllMachines() {
   console.log('🔍 Validating Fillmore machine configurations...');
 
   const machines = await getMachines();
+  let validMachineCount = 0;
 
   machines.forEach((machine, index) => {
     try {
       validateMachineConfig(machine);
 
-      // ⭐ PHASE 1: Validate machine object against schema (non-breaking)
-      schemaValidator.validate('machine', machine, {
-        machineSerial: machine.serial,
+      // ⭐ PHASE 1: Validate adapted machine object against schema (non-breaking)
+      if (schemaValidator.validate('machine', machine, {
+        machineSerial: machine.id || machine._originalSerial,
         machineName: machine.name
-      });
+      })) {
+        validMachineCount++;
+      }
 
       console.log(`✅ Machine ${index + 1}: ${machine.name} (${machine.type}) - ${machine.lanes} lanes - Valid`);
     } catch (error) {
@@ -133,6 +150,7 @@ async function validateAllMachines() {
   });
 
   console.log(`✅ All ${machines.length} machines validated successfully!`);
+  console.log(`✅ ${validMachineCount}/${machines.length} machines passed schema validation`);
 }
 
 // Get active machines only
