@@ -603,15 +603,19 @@ function adaptSession(session, options = {}) {
   };
 
   // Adapt machine (with full details)
+  const ipAddress = typeof session.machine?.ipAddress === 'string'
+    ? parseIPAddress(session.machine.ipAddress)
+    : (session.machine?.ipAddress || parseIPAddress('192.168.0.1'));
+
   const machineObj = {
     id: session.machine?.serial || session.machine?.id,
     name: session.machine?.name || 'Unknown',
     active: session.machine?.active !== undefined ? session.machine.active : true,
-    ipAddress: parseIPAddress(session.machine?.ipAddress || '192.168.0.1'),
+    ipAddress: ipAddress,
     lanes: session.machine?.lanes || 1,
     type: session.machine?.type || 'Unknown',
     polled: session.machine?.polled !== undefined ? session.machine.polled : true,
-    timestamps: createTimestamps(new Date())
+    timestamps: session.machine?.timestamps || createTimestamps(new Date())
   };
 
   // Build adapted session (only schema-required fields)
@@ -633,9 +637,13 @@ function adaptSession(session, options = {}) {
       }
     },
     timers: {
-      runtime: session.runtime || 0,
-      workTime: session.workTime || 0,
-      activeStations: session.activeStations || 0
+      elapsed: session.elapsed || 0,
+      pause: session.pause || 0,
+      run: session.runtime || session.run || 0,
+      worked: session.workTime || session.worked || 0,
+      fault: session.fault || 0,
+      offline: session.offline || 0,
+      maintenance: session.maintenance || 0
     }
   };
 
