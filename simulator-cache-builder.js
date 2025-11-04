@@ -56,11 +56,19 @@ function buildMachineDailyTotal({ machineSerial, machineName, machineSessions, f
 
     for (const s of machineSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
-      runtimeSec += safe(s.runtime) * factor;
-      workedTimeSec += safe(s.workTime) * factor;
-      timeCreditSec += safe(s.totalTimeCredit) * factor;
-      totalCounts += safe(s.totalCount) * factor;
-      totalMisfeeds += safe(s.misfeedCount) * factor;
+
+      // ✅ Handle both old (flat) and new (schema-adapted) session formats
+      const runtime = s.metrics?.timers?.run || s.runtime || 0;
+      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
+      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
+      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
+      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+
+      runtimeSec += safe(runtime) * factor;
+      workedTimeSec += safe(workTime) * factor;
+      timeCreditSec += safe(totalTimeCredit) * factor;
+      totalCounts += safe(totalCount) * factor;
+      totalMisfeeds += safe(misfeedCount) * factor;
     }
 
     // Calculate fault time and count
@@ -152,10 +160,17 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
 
     for (const s of operatorSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
-      workedTimeSec += safe(s.workTime) * factor;
-      timeCreditSec += safe(s.totalTimeCredit) * factor;
-      totalCounts += safe(s.totalCount) * factor;
-      totalMisfeeds += safe(s.misfeedCount) * factor;
+
+      // ✅ Handle both old (flat) and new (schema-adapted) session formats
+      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
+      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
+      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
+      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+
+      workedTimeSec += safe(workTime) * factor;
+      timeCreditSec += safe(totalTimeCredit) * factor;
+      totalCounts += safe(totalCount) * factor;
+      totalMisfeeds += safe(misfeedCount) * factor;
     }
 
     // For operators, we don't track separate fault sessions
@@ -226,11 +241,18 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
 
     for (const s of itemSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
-      workedTimeSec += safe(s.workTime) * factor;
-      timeCreditSec += safe(s.totalTimeCredit) * factor;
-      totalCounts += safe(s.totalCount) * factor;
-      totalMisfeeds += safe(s.misfeedCount) * factor;
-      
+
+      // ✅ Handle both old (flat) and new (schema-adapted) session formats
+      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
+      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
+      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
+      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+
+      workedTimeSec += safe(workTime) * factor;
+      timeCreditSec += safe(totalTimeCredit) * factor;
+      totalCounts += safe(totalCount) * factor;
+      totalMisfeeds += safe(misfeedCount) * factor;
+
       // Get item standard from first session
       if (!itemStandard && s.item?.standard) {
         itemStandard = s.item.standard;
@@ -308,11 +330,19 @@ function buildItemDailyTotal({ itemId, itemName, itemStandard, machineSerial, it
 
     for (const s of itemSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
-      workedTimeSec += safe(s.workTime) * factor;
-      timeCreditSec += safe(s.totalTimeCredit) * factor;
-      totalCounts += safe(s.totalCount) * factor;
-      totalMisfeeds += safe(s.misfeedCount) * factor;
-      totalRuntimeSec += safe(s.runtime) * factor;
+
+      // ✅ Handle both old (flat) and new (schema-adapted) session formats
+      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
+      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
+      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
+      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+      const runtime = s.metrics?.timers?.run || s.runtime || 0;
+
+      workedTimeSec += safe(workTime) * factor;
+      timeCreditSec += safe(totalTimeCredit) * factor;
+      totalCounts += safe(totalCount) * factor;
+      totalMisfeeds += safe(misfeedCount) * factor;
+      totalRuntimeSec += safe(runtime) * factor;
     }
 
     // Convert to milliseconds
@@ -393,25 +423,29 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
 
       // Get the overlap factor for this session
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
-      
+
+      // ✅ Handle both old (flat) and new (schema-adapted) session formats
       // Get per-item metrics from the session
       // totalCountByItem and timeCreditByItem are arrays aligned with s.items
       const countForItem = safe(s.totalCountByItem?.[itemIndex] || 0);
       const timeCreditForItem = safe(s.timeCreditByItem?.[itemIndex] || 0);
-      
+
       totalCounts += countForItem * factor;
       timeCreditSec += timeCreditForItem * factor;
-      
+
       // Count misfeeds for this specific item
-      const misfeedsForItem = (s.misfeeds || []).filter(m => m.item?.id === itemId).length;
+      // Handle both old (flat array) and new (nested object) formats for misfeeds
+      const misfeedsArray = s.counts?.misfeed || s.misfeeds || [];
+      const misfeedsForItem = misfeedsArray.filter(m => m.item?.id === itemId).length;
       totalMisfeeds += misfeedsForItem * factor;
-      
+
       // Calculate worked time proportional to this item's contribution
       // If operator worked on multiple items, distribute time based on counts
-      const totalCountInSession = safe(s.totalCount || 0);
+      const totalCountInSession = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
       if (totalCountInSession > 0) {
         const itemProportion = countForItem / totalCountInSession;
-        workedTimeSec += safe(s.workTime) * factor * itemProportion;
+        const workTime = s.metrics?.timers?.worked || s.workTime || 0;
+        workedTimeSec += safe(workTime) * factor * itemProportion;
       }
       
       // Get item standard from session items

@@ -249,7 +249,7 @@ class MachineSimulator {
       // 1. Load machine sessions for this machine today
       const machineSessionColl = db.collection(config.machineSessionCollectionName);
       this.cachedMachineSessions = await machineSessionColl.find({
-        'machine.serial': machineSerial,
+        'machine.id': machineSerial,  // In this system, machine.id is the serial number
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -258,7 +258,7 @@ class MachineSimulator {
       // 2. Load fault sessions for this machine today
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
       this.cachedFaultSessions = await faultSessionColl.find({
-        'machine.serial': machineSerial,
+        'machine.id': machineSerial,  // In this system, machine.id is the serial number
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -267,7 +267,7 @@ class MachineSimulator {
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
       const operatorSessions = await operatorSessionColl.find({
-        'machine.serial': machineSerial,
+        'counts.machine.id': machineSerial,  // Operator sessions have machine info nested in counts array
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -287,7 +287,7 @@ class MachineSimulator {
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
       const itemSessions = await itemSessionColl.find({
-        'machine.serial': machineSerial,
+        'machine.id': machineSerial,  // In this system, machine.id is the serial number
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -948,15 +948,42 @@ class MachineSimulator {
         updateData['endState'] = session.endState;
       }
 
+      // ✅ Update both flat fields (for backward compat) and nested metrics (for schema compliance)
+      const dbUpdate = {
+        ...updateData,
+        // Update nested metrics structure for schema-adapted sessions
+        'metrics.timers.run': updateData.runtime,
+        'metrics.timers.worked': updateData.workTime,
+        'metrics.totals.timeCredit': updateData.totalTimeCredit,
+        'metrics.totals.counts.valid': updateData.totalCount,
+        'metrics.totals.counts.misfeed': updateData.misfeedCount
+      };
+
       await sessionCollection.updateOne(
         { _id: sessionId },
-        { $set: updateData }
+        { $set: dbUpdate }
       );
 
       // ⭐ Sync in-memory cache array with updated values (don't refetch from DB)
       const sessionIndex = this.cachedMachineSessions.findIndex(s => s._id.equals(sessionId));
       if (sessionIndex !== -1) {
         Object.assign(this.cachedMachineSessions[sessionIndex], updateData);
+
+        // ✅ Also update nested metrics structure for schema-adapted sessions
+        if (this.cachedMachineSessions[sessionIndex].metrics) {
+          if (!this.cachedMachineSessions[sessionIndex].metrics.timers) {
+            this.cachedMachineSessions[sessionIndex].metrics.timers = {};
+          }
+          if (!this.cachedMachineSessions[sessionIndex].metrics.totals) {
+            this.cachedMachineSessions[sessionIndex].metrics.totals = { counts: {} };
+          }
+
+          this.cachedMachineSessions[sessionIndex].metrics.timers.run = updateData.runtime;
+          this.cachedMachineSessions[sessionIndex].metrics.timers.worked = updateData.workTime;
+          this.cachedMachineSessions[sessionIndex].metrics.totals.timeCredit = updateData.totalTimeCredit;
+          this.cachedMachineSessions[sessionIndex].metrics.totals.counts.valid = updateData.totalCount;
+          this.cachedMachineSessions[sessionIndex].metrics.totals.counts.misfeed = updateData.misfeedCount;
+        }
       }
 
       // Reduced logging to prevent console spam - only log every 100 updates
@@ -1284,6 +1311,7 @@ class MachineSimulator {
             const operatorRecord = JSON.parse(JSON.stringify(record));
             operatorRecord.operators = [operator]; // Single operator instead of array
             delete operatorRecord._id; // Remove _id to get fresh one for each collection
+            delete operatorRecord.status; // Remove status for schema compliance
 
             // Write to main operator collection
             await db.collection(config.stateOperatorCollectionName).insertOne({ ...operatorRecord });
@@ -1431,29 +1459,34 @@ class MachineSimulator {
     }
 
     // ⭐ PHASE 3: Adapt state to schema-compliant format (now includes _tickerDoc)
-    const adaptedRecord = schemaAdapters.adaptState(record);
+    // Include status field for stateTicker, but exclude it from schema validation
+    const adaptedRecord = schemaAdapters.adaptState(record, { includeStatus: true });
 
-    // Validate adapted state (exclude _tickerDoc for validation as it's for internal use only)
-    const { _tickerDoc, ...recordForValidation } = adaptedRecord;
+    // Validate adapted state (exclude _tickerDoc and status for validation)
+    const { _tickerDoc, status, ...recordForValidation } = adaptedRecord;
     schemaValidator.validate('state', recordForValidation, {
       machineSerial: this.machineConfig.id || this.machineConfig.serial,
       stateType
     });
 
-    // Write to main state-machine collection (using adapted record)
-    await db.collection(this.collectionName).insertOne(adaptedRecord);
+    // Write to main state-machine collection (exclude status for schema compliance)
+    const { status: removedStatus1, ...adaptedRecordForMain } = adaptedRecord;
+    await db.collection(this.collectionName).insertOne(adaptedRecordForMain);
 
-    // Write to additional state collections (using adapted record, remove _id first)
+    // Write to additional state collections (exclude status and _id for schema compliance)
     const adaptedRecordCopy1 = JSON.parse(JSON.stringify(adaptedRecord));
     delete adaptedRecordCopy1._id;
+    delete adaptedRecordCopy1.status;
     await db.collection(config.stateMachineDailyCollectionName).insertOne(adaptedRecordCopy1);
 
     const adaptedRecordCopy2 = JSON.parse(JSON.stringify(adaptedRecord));
     delete adaptedRecordCopy2._id;
+    delete adaptedRecordCopy2.status;
     await db.collection(config.stateMachineWeeklyCollectionName).insertOne(adaptedRecordCopy2);
 
     const adaptedRecordCopy3 = JSON.parse(JSON.stringify(adaptedRecord));
     delete adaptedRecordCopy3._id;
+    delete adaptedRecordCopy3.status;
     await db.collection(config.stateMachineMonthlyCollectionName).insertOne(adaptedRecordCopy3);
 
     // Write operator-specific records to operator collections (using adapted record)

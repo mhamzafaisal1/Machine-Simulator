@@ -516,6 +516,11 @@ function adaptState(state, options = {}) {
     stations: state.operators ? state.operators.map(op => op.station).filter(s => s) : []
   };
 
+  // Only include status for stateTicker (non-schema-validated contexts)
+  if (options.includeStatus) {
+    stateObj.status = adaptStatus(state.status);
+  }
+
   // Only add session_id if it exists (optional field)
   if (state.session_id) {
     stateObj.session_id = String(state.session_id);
@@ -555,14 +560,14 @@ function adaptStatus(status) {
     return {
       code: 0,
       name: 'Unknown',
-      color: 'grey'
+      softrolColor: 'None'
     };
   }
 
   return {
     code: status.code,
     name: status.name,
-    color: status.softrolColor || status.color || 'grey'
+    softrolColor: status.softrolColor || status.color || 'None'
   };
 }
 
