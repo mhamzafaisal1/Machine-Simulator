@@ -856,8 +856,13 @@ class MachineSimulator {
 
       // Calculate end time (use current time for active sessions, or session end time for completed)
       const endTime = session.timestamps.end || new Date();
-      const startTime = DateTime.fromJSDate(session.timestamps.start);
-      const endDateTime = DateTime.fromJSDate(endTime);
+      // Handle timestamps that may be Date objects or ISO strings
+      const startTime = session.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(session.timestamps.start)
+        : DateTime.fromISO(session.timestamps.start);
+      const endDateTime = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
 
       // Calculate runtime in seconds
       const runtime = endDateTime.diff(startTime, 'seconds').seconds;
@@ -970,20 +975,26 @@ class MachineSimulator {
         Object.assign(this.cachedMachineSessions[sessionIndex], updateData);
 
         // ✅ Also update nested metrics structure for schema-adapted sessions
-        if (this.cachedMachineSessions[sessionIndex].metrics) {
-          if (!this.cachedMachineSessions[sessionIndex].metrics.timers) {
-            this.cachedMachineSessions[sessionIndex].metrics.timers = {};
-          }
-          if (!this.cachedMachineSessions[sessionIndex].metrics.totals) {
-            this.cachedMachineSessions[sessionIndex].metrics.totals = { counts: {} };
-          }
-
-          this.cachedMachineSessions[sessionIndex].metrics.timers.run = updateData.runtime;
-          this.cachedMachineSessions[sessionIndex].metrics.timers.worked = updateData.workTime;
-          this.cachedMachineSessions[sessionIndex].metrics.totals.timeCredit = updateData.totalTimeCredit;
-          this.cachedMachineSessions[sessionIndex].metrics.totals.counts.valid = updateData.totalCount;
-          this.cachedMachineSessions[sessionIndex].metrics.totals.counts.misfeed = updateData.misfeedCount;
+        // Create metrics structure if it doesn't exist
+        if (!this.cachedMachineSessions[sessionIndex].metrics) {
+          this.cachedMachineSessions[sessionIndex].metrics = {};
         }
+        if (!this.cachedMachineSessions[sessionIndex].metrics.timers) {
+          this.cachedMachineSessions[sessionIndex].metrics.timers = {};
+        }
+        if (!this.cachedMachineSessions[sessionIndex].metrics.totals) {
+          this.cachedMachineSessions[sessionIndex].metrics.totals = { counts: {} };
+        }
+        if (!this.cachedMachineSessions[sessionIndex].metrics.totals.counts) {
+          this.cachedMachineSessions[sessionIndex].metrics.totals.counts = {};
+        }
+
+        // Always update the values (don't check if they exist first)
+        this.cachedMachineSessions[sessionIndex].metrics.timers.run = updateData.runtime;
+        this.cachedMachineSessions[sessionIndex].metrics.timers.worked = updateData.workTime;
+        this.cachedMachineSessions[sessionIndex].metrics.totals.timeCredit = updateData.totalTimeCredit;
+        this.cachedMachineSessions[sessionIndex].metrics.totals.counts.valid = updateData.totalCount;
+        this.cachedMachineSessions[sessionIndex].metrics.totals.counts.misfeed = updateData.misfeedCount;
       }
 
       // Reduced logging to prevent console spam - only log every 100 updates
@@ -1003,8 +1014,14 @@ class MachineSimulator {
       const s = await coll.findOne({ _id: sessionId });
       if (!s) return;
 
-      const start = DateTime.fromJSDate(s.timestamps.start);
-      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      // Handle timestamps that may be Date objects or ISO strings
+      const start = s.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(s.timestamps.start)
+        : DateTime.fromISO(s.timestamps.start);
+      const endTime = s.timestamps.end || new Date();
+      const end = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
       const runtime = end.diff(start, 'seconds').seconds;
 
       // Per-operator workTime == runtime (single operator)
@@ -1076,15 +1093,17 @@ class MachineSimulator {
       const sessionCollection = db.collection(config.machineSessionCollectionName);
 
       // Update session with end information
+      // Note: Schema-adapted sessions have states as {start, array, end}, not a flat array
+      const schemaAdapters = require('./schema-adapters');
+      const adaptedEndState = schemaAdapters.adaptState(endState);
+
       await sessionCollection.updateOne(
         { _id: this.currentSessionId },
         {
           $set: {
             'timestamps.end': endState.timestamp,
-            endState: endState
-          },
-          $push: {
-            states: endState
+            endState: endState,
+            'states.end': adaptedEndState  // Set the end state in the states object
           }
         }
       );
@@ -1128,6 +1147,7 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
+      // Operator sessions are not schema-adapted, so states is still a flat array
       for (const [operatorId, opSessionId] of this.operatorSessionIdsByStation) {
         await coll.updateOne(
           { _id: opSessionId },
@@ -1249,8 +1269,14 @@ class MachineSimulator {
       const s = await coll.findOne({ _id: sessionId });
       if (!s) return;
 
-      const start = DateTime.fromJSDate(s.timestamps.start);
-      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      // Handle timestamps that may be Date objects or ISO strings
+      const start = s.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(s.timestamps.start)
+        : DateTime.fromISO(s.timestamps.start);
+      const endTime = s.timestamps.end || new Date();
+      const end = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
       const runtime = end.diff(start, 'seconds').seconds;
 
       const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
@@ -1597,8 +1623,14 @@ class MachineSimulator {
       const coll = db.collection(config.faultSessionCollectionName);
       const s = await coll.findOne({ _id: sessionId });
       if (!s) return;
-      const start = DateTime.fromJSDate(s.timestamps.start);
-      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      // Handle timestamps that may be Date objects or ISO strings
+      const start = s.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(s.timestamps.start)
+        : DateTime.fromISO(s.timestamps.start);
+      const endTime = s.timestamps.end || new Date();
+      const end = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
       const faulttime = end.diff(start, 'seconds').seconds;
       const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
       const workTimeMissed = faulttime * activeStations;
