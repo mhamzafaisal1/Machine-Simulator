@@ -304,10 +304,10 @@ class MachineSimulator {
       
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
       console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
-      
+
       // ⭐ Start the recurring cache update interval
       this.startCacheUpdateInterval();
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error loading today's sessions:`, error);
       // Don't throw - simulator can continue without cache, it just won't update cache totals
@@ -315,8 +315,126 @@ class MachineSimulator {
   }
 
   /**
+   * ⭐ Handles day rollover at midnight
+   * Ends all open sessions, resets todayStart, and reloads cache for the new day
+   * @param {Date} newDayStart - Midnight of the new day
+   */
+  async handleDayRollover(newDayStart) {
+    try {
+      console.log(`[${this.getTimestamp()}] 🌅 Handling day rollover to ${newDayStart.toISOString()}`);
+
+      // Create an "end of day" state record for closing sessions
+      const endOfDayState = {
+        timestamp: new Date(),
+        machine: this.machineConfig,
+        program: this.currentRunningState?.program || {
+          mode: "smallPiece",
+          programNumber: 1,
+          batchNumber: 0,
+          accountNumber: 0,
+          speed: 0,
+          stations: this.machineConfig.lanes || 1
+        },
+        operators: this.currentRunningState?.operators || [],
+        status: { code: 0, name: "End of Day", softrolColor: "Grey" }
+      };
+
+      // 1. End all open sessions
+      console.log(`[${this.getTimestamp()}] 🛑 Ending all open sessions for day rollover...`);
+
+      // End machine session if one is open
+      if (this.currentSessionId) {
+        await this.endMachineSession(endOfDayState);
+      }
+
+      // End operator sessions if any are open
+      if (this.operatorSessionIdsByStation.size > 0) {
+        await this.endOperatorSessions(endOfDayState);
+      }
+
+      // End fault session if one is open
+      if (this.currentFaultSessionId) {
+        await this.endFaultSession(endOfDayState);
+      }
+
+      // Defensive cleanup for any lingering operator sessions
+      await this.closeOpenOperatorSessions(endOfDayState);
+
+      console.log(`[${this.getTimestamp()}] ✅ All sessions closed for day rollover`);
+
+      // 2. Update cache one final time for yesterday's data
+      console.log(`[${this.getTimestamp()}] 📊 Running final cache update for previous day...`);
+      const result = await recalculateAndUpdateCache({
+        db: this.client.db(this.dbName),
+        machineSerial: this.machineConfig.id || this.machineConfig.serial,
+        machineName: this.machineConfig.name,
+        machineSessions: this.cachedMachineSessions,
+        faultSessions: this.cachedFaultSessions,
+        operatorSessionsMap: this.cachedOperatorSessions,
+        itemSessionsMap: this.cachedItemSessions,
+        queryStart: this.todayStart,
+        queryEnd: new Date()
+      });
+
+      if (result.success) {
+        console.log(`[${this.getTimestamp()}] ✅ Final cache update completed: ${result.recordsUpdated} records`);
+      }
+
+      // 3. Reset todayStart and reload sessions for the new day
+      console.log(`[${this.getTimestamp()}] 🔄 Reloading sessions for new day...`);
+      this.todayStart = newDayStart;
+
+      // Clear old cache arrays
+      this.cachedMachineSessions = [];
+      this.cachedFaultSessions = [];
+      this.cachedOperatorSessions.clear();
+      this.cachedItemSessions.clear();
+
+      // Reload sessions for the new day
+      await this.loadTodaysSessions();
+
+      console.log(`[${this.getTimestamp()}] 🎉 Day rollover complete! Now running on ${newDayStart.toISOString()}`);
+
+      // 4. If machine was in a running state, start new sessions for the new day
+      if (this.inSession) {
+        console.log(`[${this.getTimestamp()}] 🔄 Machine was running, starting new sessions for new day...`);
+
+        // Create a new running state
+        const newRunningState = {
+          timestamp: new Date(),
+          machine: this.machineConfig,
+          program: this.currentRunningState?.program || {
+            mode: "smallPiece",
+            programNumber: 1,
+            batchNumber: Math.floor(Math.random() * 21) + 20,
+            accountNumber: 0,
+            speed: 0,
+            stations: this.machineConfig.lanes || 1,
+            items: this.buildCurrentItemsArray()
+          },
+          operators: this.currentRunningState?.operators || [],
+          status: { code: 1, name: "Run", softrolColor: "Green" }
+        };
+
+        // Start new sessions for the new day
+        await this.startMachineSession(newRunningState);
+        await this.startOperatorSessions(newRunningState);
+        await this.startItemSessions(newRunningState);
+
+        console.log(`[${this.getTimestamp()}] ✅ New sessions started for new day`);
+      }
+
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error handling day rollover:`, error);
+      // Try to recover by at least resetting todayStart
+      this.todayStart = newDayStart;
+    }
+  }
+
+  /**
    * ⭐ Recalculates and updates daily cache totals using in-memory session data
    * This is called after session updates to keep cache up-to-date in real-time
+   * Also handles day rollover by detecting midnight crossings
    */
   async recalculateDailyCacheTotals() {
     try {
@@ -327,7 +445,17 @@ class MachineSimulator {
 
       const db = this.client.db(this.dbName);
       const now = new Date();
-      
+
+      // ⭐ Check if we've crossed midnight (day change detection)
+      const SYSTEM_TIMEZONE = 'America/Chicago';
+      const currentDayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
+
+      if (currentDayStart.getTime() !== this.todayStart.getTime()) {
+        console.log(`[${this.getTimestamp()}] 🌅 Day change detected! Rolling over from ${this.todayStart.toISOString()} to ${currentDayStart.toISOString()}`);
+        await this.handleDayRollover(currentDayStart);
+        return; // Exit early - handleDayRollover will trigger a fresh cache update
+      }
+
       // Recalculate and update cache using in-memory session arrays
       const result = await recalculateAndUpdateCache({
         db,
@@ -340,13 +468,13 @@ class MachineSimulator {
         queryStart: this.todayStart,
         queryEnd: now
       });
-      
+
       if (result.success) {
         console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.machineItemTotals} machine-items, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
       } else {
         console.error(`[${this.getTimestamp()}] ❌ Cache update failed: ${result.error}`);
       }
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating daily cache totals:`, error);
       // Don't throw - cache updates are non-critical
