@@ -231,8 +231,9 @@ class MachineSimulator {
   /**
    * ⭐ Loads today's sessions into memory for real-time cache building
    * This eliminates the need for database polling by the cacher service
+   * @param {boolean} startInterval - Whether to start the cache update interval (default: true)
    */
-  async loadTodaysSessions() {
+  async loadTodaysSessions(startInterval = true) {
     try {
       console.log(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
       
@@ -305,8 +306,10 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
       console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
 
-      // ⭐ Start the recurring cache update interval
-      this.startCacheUpdateInterval();
+      // ⭐ Start the recurring cache update interval (only if requested)
+      if (startInterval) {
+        this.startCacheUpdateInterval();
+      }
 
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error loading today's sessions:`, error);
@@ -390,8 +393,8 @@ class MachineSimulator {
       this.cachedOperatorSessions.clear();
       this.cachedItemSessions.clear();
 
-      // Reload sessions for the new day
-      await this.loadTodaysSessions();
+      // Reload sessions for the new day (don't restart interval - it's already running)
+      await this.loadTodaysSessions(false);
 
       console.log(`[${this.getTimestamp()}] 🎉 Day rollover complete! Now running on ${newDayStart.toISOString()}`);
 
