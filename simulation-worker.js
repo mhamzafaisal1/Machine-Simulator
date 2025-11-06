@@ -52,6 +52,12 @@ class MachineSimulator {
     this.cachedMachineSessions = [];                  // Machine sessions for today
     this.cachedFaultSessions = [];                    // Fault sessions for today
     this.cachedOperatorSessions = new Map();          // operatorId -> session array for today
+
+    // ⭐ MIDNIGHT ROLLOVER FLAGS
+    this.midnightShutdownDone = false;                // Tracks if 11:59pm shutdown has happened
+    this.wasRunningBeforeMidnight = false;            // Tracks if machine was running before shutdown
+    this.operatorsBeforeMidnight = [];                // Stores operators before midnight
+    this.itemsBeforeMidnight = [];                    // Stores items before midnight
     this.cachedItemSessions = new Map();              // itemId -> session array for today
     this.todayStart = null;                           // Midnight today (for filtering)
     this.cacheUpdateInterval = null;                  // Recurring interval for cache updates
@@ -173,6 +179,9 @@ class MachineSimulator {
       // ⭐ Load today's sessions into memory for real-time cache building
       await this.loadTodaysSessions();
 
+      // ⭐ Schedule automatic midnight shutdown/restart
+      this.scheduleMidnightRollover();
+
       this.isRunning = true;
       await this.simulationLoop();
     } catch (error) {
@@ -231,8 +240,9 @@ class MachineSimulator {
   /**
    * ⭐ Loads today's sessions into memory for real-time cache building
    * This eliminates the need for database polling by the cacher service
+   * @param {boolean} startInterval - Whether to start the cache update interval (default: true)
    */
-  async loadTodaysSessions() {
+  async loadTodaysSessions(startInterval = true) {
     try {
       console.log(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
       
@@ -304,10 +314,12 @@ class MachineSimulator {
       
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
       console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
-      
-      // ⭐ Start the recurring cache update interval
-      this.startCacheUpdateInterval();
-      
+
+      // ⭐ Start the recurring cache update interval (only if requested)
+      if (startInterval) {
+        this.startCacheUpdateInterval();
+      }
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error loading today's sessions:`, error);
       // Don't throw - simulator can continue without cache, it just won't update cache totals
@@ -315,8 +327,166 @@ class MachineSimulator {
   }
 
   /**
+   * ⭐ Schedules automatic midnight shutdown/restart
+   * At 11:59pm: Stop machines and end all sessions
+   * At 12:01am: Restart machines that were running
+   */
+  scheduleMidnightRollover() {
+    const SYSTEM_TIMEZONE = 'America/Chicago';
+
+    // Check every minute if we need to do midnight actions
+    setInterval(() => {
+      const now = DateTime.now().setZone(SYSTEM_TIMEZONE);
+      const hour = now.hour;
+      const minute = now.minute;
+
+      // At 11:59pm, shutdown machines
+      if (hour === 23 && minute === 59 && !this.midnightShutdownDone) {
+        console.log(`[${this.getTimestamp()}] 🌙 11:59pm - Initiating midnight shutdown...`);
+        this.performMidnightShutdown();
+        this.midnightShutdownDone = true;
+      }
+
+      // At 12:01am (or up to 12:02am if we missed the exact minute), restart machines
+      if (hour === 0 && minute >= 1 && minute <= 2 && this.midnightShutdownDone) {
+        console.log(`[${this.getTimestamp()}] 🌅 12:0${minute}am - Initiating midnight restart...`);
+        this.performMidnightRestart();
+        this.midnightShutdownDone = false; // Reset for next day
+      }
+
+      // Reset flag at 12:03am in case we completely missed the restart window
+      if (hour === 0 && minute === 3 && this.midnightShutdownDone) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ Missed midnight restart window (12:01-12:02am), resetting flag`);
+        this.midnightShutdownDone = false;
+      }
+    }, 60000); // Check every 60 seconds
+
+    console.log(`[${this.getTimestamp()}] ⏰ Midnight rollover scheduler started`);
+  }
+
+  /**
+   * ⭐ Performs midnight shutdown at 11:59pm
+   * Stops machines, ends all sessions, updates cache
+   */
+  async performMidnightShutdown() {
+    try {
+      console.log(`[${this.getTimestamp()}] 🛑 Performing midnight shutdown...`);
+
+      // Remember if machine was running
+      this.wasRunningBeforeMidnight = this.inSession;
+      this.operatorsBeforeMidnight = this.currentRunningState?.operators || [];
+      this.itemsBeforeMidnight = this.buildCurrentItemsArray();
+
+      // Create shutdown state
+      const shutdownState = {
+        timestamp: new Date(),
+        machine: this.machineConfig,
+        program: this.currentRunningState?.program || {
+          mode: "smallPiece",
+          programNumber: 1,
+          batchNumber: 0,
+          accountNumber: 0,
+          speed: 0,
+          stations: this.machineConfig.lanes || 1
+        },
+        operators: this.currentRunningState?.operators || [],
+        status: { code: 0, name: "Midnight Shutdown", softrolColor: "Grey" }
+      };
+
+      // End all sessions
+      if (this.currentSessionId) {
+        await this.endMachineSession(shutdownState);
+      }
+      if (this.operatorSessionIdsByStation.size > 0) {
+        await this.endOperatorSessions(shutdownState);
+      }
+      if (this.currentFaultSessionId) {
+        await this.endFaultSession(shutdownState);
+      }
+      await this.closeOpenOperatorSessions(shutdownState);
+
+      // Final cache update for the day
+      console.log(`[${this.getTimestamp()}] 📊 Running final cache update for ${this.todayStart.toISOString().split('T')[0]}...`);
+      await recalculateAndUpdateCache({
+        db: this.client.db(this.dbName),
+        machineSerial: this.machineConfig.id || this.machineConfig.serial,
+        machineName: this.machineConfig.name,
+        machineSessions: this.cachedMachineSessions,
+        faultSessions: this.cachedFaultSessions,
+        operatorSessionsMap: this.cachedOperatorSessions,
+        itemSessionsMap: this.cachedItemSessions,
+        queryStart: this.todayStart,
+        queryEnd: new Date()
+      });
+
+      console.log(`[${this.getTimestamp()}] ✅ Midnight shutdown complete. Waiting for 12:01am restart...`);
+
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error during midnight shutdown:`, error);
+    }
+  }
+
+  /**
+   * ⭐ Performs midnight restart at 12:01am
+   * Resets cache, loads new day sessions, restarts machines
+   */
+  async performMidnightRestart() {
+    try {
+      const SYSTEM_TIMEZONE = 'America/Chicago';
+      const newDayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
+
+      console.log(`[${this.getTimestamp()}] 🌅 Performing midnight restart for ${newDayStart.toISOString().split('T')[0]}...`);
+
+      // Update todayStart to new day
+      this.todayStart = newDayStart;
+
+      // Clear old cache arrays
+      this.cachedMachineSessions = [];
+      this.cachedFaultSessions = [];
+      this.cachedOperatorSessions.clear();
+      this.cachedItemSessions.clear();
+
+      // Reload sessions for new day
+      await this.loadTodaysSessions(false);
+
+      // Restart machines if they were running before midnight
+      if (this.wasRunningBeforeMidnight) {
+        console.log(`[${this.getTimestamp()}] 🔄 Restarting machines that were running before midnight...`);
+
+        const restartState = {
+          timestamp: new Date(),
+          machine: this.machineConfig,
+          program: {
+            mode: "smallPiece",
+            programNumber: 1,
+            batchNumber: Math.floor(Math.random() * 21) + 20,
+            accountNumber: 0,
+            speed: 0,
+            stations: this.machineConfig.lanes || 1,
+            items: this.itemsBeforeMidnight
+          },
+          operators: this.operatorsBeforeMidnight,
+          status: { code: 1, name: "Run", softrolColor: "Green" }
+        };
+
+        await this.startMachineSession(restartState);
+        await this.startOperatorSessions(restartState);
+        await this.startItemSessions(restartState);
+
+        console.log(`[${this.getTimestamp()}] ✅ Machines restarted for new day`);
+      }
+
+      console.log(`[${this.getTimestamp()}] 🎉 Midnight restart complete! Now running on ${newDayStart.toISOString().split('T')[0]}`);
+
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error during midnight restart:`, error);
+    }
+  }
+
+  /**
    * ⭐ Recalculates and updates daily cache totals using in-memory session data
    * This is called after session updates to keep cache up-to-date in real-time
+   * Note: Day rollover is now handled by scheduleMidnightRollover() at 11:59pm/12:01am
    */
   async recalculateDailyCacheTotals() {
     try {
@@ -327,7 +497,7 @@ class MachineSimulator {
 
       const db = this.client.db(this.dbName);
       const now = new Date();
-      
+
       // Recalculate and update cache using in-memory session arrays
       const result = await recalculateAndUpdateCache({
         db,
@@ -340,13 +510,13 @@ class MachineSimulator {
         queryStart: this.todayStart,
         queryEnd: now
       });
-      
+
       if (result.success) {
         console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.machineItemTotals} machine-items, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
       } else {
         console.error(`[${this.getTimestamp()}] ❌ Cache update failed: ${result.error}`);
       }
-      
+
     } catch (error) {
       console.error(`[${this.getTimestamp()}] ❌ Error recalculating daily cache totals:`, error);
       // Don't throw - cache updates are non-critical
@@ -856,8 +1026,13 @@ class MachineSimulator {
 
       // Calculate end time (use current time for active sessions, or session end time for completed)
       const endTime = session.timestamps.end || new Date();
-      const startTime = DateTime.fromJSDate(session.timestamps.start);
-      const endDateTime = DateTime.fromJSDate(endTime);
+      // Handle timestamps that may be Date objects or ISO strings
+      const startTime = session.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(session.timestamps.start)
+        : DateTime.fromISO(session.timestamps.start);
+      const endDateTime = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
 
       // Calculate runtime in seconds
       const runtime = endDateTime.diff(startTime, 'seconds').seconds;
@@ -970,20 +1145,26 @@ class MachineSimulator {
         Object.assign(this.cachedMachineSessions[sessionIndex], updateData);
 
         // ✅ Also update nested metrics structure for schema-adapted sessions
-        if (this.cachedMachineSessions[sessionIndex].metrics) {
-          if (!this.cachedMachineSessions[sessionIndex].metrics.timers) {
-            this.cachedMachineSessions[sessionIndex].metrics.timers = {};
-          }
-          if (!this.cachedMachineSessions[sessionIndex].metrics.totals) {
-            this.cachedMachineSessions[sessionIndex].metrics.totals = { counts: {} };
-          }
-
-          this.cachedMachineSessions[sessionIndex].metrics.timers.run = updateData.runtime;
-          this.cachedMachineSessions[sessionIndex].metrics.timers.worked = updateData.workTime;
-          this.cachedMachineSessions[sessionIndex].metrics.totals.timeCredit = updateData.totalTimeCredit;
-          this.cachedMachineSessions[sessionIndex].metrics.totals.counts.valid = updateData.totalCount;
-          this.cachedMachineSessions[sessionIndex].metrics.totals.counts.misfeed = updateData.misfeedCount;
+        // Create metrics structure if it doesn't exist
+        if (!this.cachedMachineSessions[sessionIndex].metrics) {
+          this.cachedMachineSessions[sessionIndex].metrics = {};
         }
+        if (!this.cachedMachineSessions[sessionIndex].metrics.timers) {
+          this.cachedMachineSessions[sessionIndex].metrics.timers = {};
+        }
+        if (!this.cachedMachineSessions[sessionIndex].metrics.totals) {
+          this.cachedMachineSessions[sessionIndex].metrics.totals = { counts: {} };
+        }
+        if (!this.cachedMachineSessions[sessionIndex].metrics.totals.counts) {
+          this.cachedMachineSessions[sessionIndex].metrics.totals.counts = {};
+        }
+
+        // Always update the values (don't check if they exist first)
+        this.cachedMachineSessions[sessionIndex].metrics.timers.run = updateData.runtime;
+        this.cachedMachineSessions[sessionIndex].metrics.timers.worked = updateData.workTime;
+        this.cachedMachineSessions[sessionIndex].metrics.totals.timeCredit = updateData.totalTimeCredit;
+        this.cachedMachineSessions[sessionIndex].metrics.totals.counts.valid = updateData.totalCount;
+        this.cachedMachineSessions[sessionIndex].metrics.totals.counts.misfeed = updateData.misfeedCount;
       }
 
       // Reduced logging to prevent console spam - only log every 100 updates
@@ -1003,8 +1184,14 @@ class MachineSimulator {
       const s = await coll.findOne({ _id: sessionId });
       if (!s) return;
 
-      const start = DateTime.fromJSDate(s.timestamps.start);
-      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      // Handle timestamps that may be Date objects or ISO strings
+      const start = s.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(s.timestamps.start)
+        : DateTime.fromISO(s.timestamps.start);
+      const endTime = s.timestamps.end || new Date();
+      const end = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
       const runtime = end.diff(start, 'seconds').seconds;
 
       // Per-operator workTime == runtime (single operator)
@@ -1076,15 +1263,17 @@ class MachineSimulator {
       const sessionCollection = db.collection(config.machineSessionCollectionName);
 
       // Update session with end information
+      // Note: Schema-adapted sessions have states as {start, array, end}, not a flat array
+      const schemaAdapters = require('./schema-adapters');
+      const adaptedEndState = schemaAdapters.adaptState(endState);
+
       await sessionCollection.updateOne(
         { _id: this.currentSessionId },
         {
           $set: {
             'timestamps.end': endState.timestamp,
-            endState: endState
-          },
-          $push: {
-            states: endState
+            endState: endState,
+            'states.end': adaptedEndState  // Set the end state in the states object
           }
         }
       );
@@ -1128,6 +1317,7 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
+      // Operator sessions are not schema-adapted, so states is still a flat array
       for (const [operatorId, opSessionId] of this.operatorSessionIdsByStation) {
         await coll.updateOne(
           { _id: opSessionId },
@@ -1249,8 +1439,14 @@ class MachineSimulator {
       const s = await coll.findOne({ _id: sessionId });
       if (!s) return;
 
-      const start = DateTime.fromJSDate(s.timestamps.start);
-      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      // Handle timestamps that may be Date objects or ISO strings
+      const start = s.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(s.timestamps.start)
+        : DateTime.fromISO(s.timestamps.start);
+      const endTime = s.timestamps.end || new Date();
+      const end = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
       const runtime = end.diff(start, 'seconds').seconds;
 
       const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
@@ -1597,8 +1793,14 @@ class MachineSimulator {
       const coll = db.collection(config.faultSessionCollectionName);
       const s = await coll.findOne({ _id: sessionId });
       if (!s) return;
-      const start = DateTime.fromJSDate(s.timestamps.start);
-      const end = DateTime.fromJSDate(s.timestamps.end || new Date());
+      // Handle timestamps that may be Date objects or ISO strings
+      const start = s.timestamps.start instanceof Date
+        ? DateTime.fromJSDate(s.timestamps.start)
+        : DateTime.fromISO(s.timestamps.start);
+      const endTime = s.timestamps.end || new Date();
+      const end = endTime instanceof Date
+        ? DateTime.fromJSDate(endTime)
+        : DateTime.fromISO(endTime);
       const faulttime = end.diff(start, 'seconds').seconds;
       const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
       const workTimeMissed = faulttime * activeStations;
@@ -1639,7 +1841,8 @@ class MachineSimulator {
       await this.delay(getRandomDelay(2, 75));
       if (!this.isRunning) break;
 
-      const nextState = Math.random() < 0.45 ? "Timeout" : "Fault";
+      // Real-world scenario: 5% chance of fault, 95% chance of normal timeout
+      const nextState = Math.random() < 0.05 ? "Fault" : "Timeout";
       await this.writeState(nextState);
 
       // Select next item when machine stops (before delay)

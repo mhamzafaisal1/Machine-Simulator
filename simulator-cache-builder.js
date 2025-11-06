@@ -7,6 +7,93 @@ const schemaValidator = require('./schema-validator');
 
 const SYSTEM_TIMEZONE = 'America/Chicago';
 
+// --- Normalizers for legacy vs schema-adapted sessions ---
+// These handle sessions BEFORE updateSessionStats runs (raw schema-adapted format)
+// and AFTER updateSessionStats runs (with computed metrics.*)
+
+function getCountsValid(s) {
+  // Try computed metrics first
+  if (Number.isFinite(s.metrics?.totals?.counts?.valid)) return s.metrics.totals.counts.valid;
+  if (Number.isFinite(s.totalCount)) return s.totalCount;
+  // Fall back to raw arrays
+  if (Array.isArray(s.counts)) return s.counts.length;                          // legacy
+  if (Array.isArray(s.counts?.valid)) return s.counts.valid.length;             // adapted
+  return 0;
+}
+
+function getCountsMisfeed(s) {
+  // Try computed metrics first
+  if (Number.isFinite(s.metrics?.totals?.counts?.misfeed)) return s.metrics.totals.counts.misfeed;
+  if (Number.isFinite(s.misfeedCount)) return s.misfeedCount;
+  // Fall back to raw arrays
+  if (Array.isArray(s.misfeeds)) return s.misfeeds.length;                      // legacy
+  if (Array.isArray(s.counts?.misfeed)) return s.counts.misfeed.length;         // adapted
+  return 0;
+}
+
+function getRuntimeSeconds(s) {
+  // Try computed metrics first
+  if (Number.isFinite(s.metrics?.timers?.run)) return s.metrics.timers.run;
+  if (Number.isFinite(s.runtime)) return s.runtime;
+  // Fall back to deriving from timestamps
+  const start = s.timestamps?.start ? new Date(s.timestamps.start) : null;
+  const end = new Date(s.timestamps?.end || Date.now());
+  return start ? Math.max(0, (end - start) / 1000) : 0;
+}
+
+function getWorkedSeconds(s) {
+  // Try computed metrics first
+  if (Number.isFinite(s.metrics?.timers?.worked)) return s.metrics.timers.worked;
+  if (Number.isFinite(s.workTime)) return s.workTime;
+  // Fall back to deriving: runtime * active stations
+  const runtime = getRuntimeSeconds(s);
+  const activeStations = Number.isFinite(s.activeStations)
+    ? s.activeStations
+    : (Array.isArray(s.operators) ? s.operators.filter(op => op?.id !== -1).length : 0);
+  return runtime * activeStations;
+}
+
+function normalizePPH(std) {
+  const n = Number(std) || 0;
+  return n < 60 ? n * 60 : n; // PPM -> PPH
+}
+
+function getTimeCreditSeconds(s) {
+  // Try computed metrics first
+  if (Number.isFinite(s.metrics?.totals?.timeCredit)) return s.metrics.totals.timeCredit;
+  if (Number.isFinite(s.totalTimeCredit)) return s.totalTimeCredit;
+
+  // Fall back to computing from items and counts
+  const validCount = getCountsValid(s);
+  const items = Array.isArray(s.items) && s.items.length > 0
+    ? s.items
+    : (s.item ? [s.item] : []);
+
+  if (!items.length || validCount === 0) return 0;
+
+  // For single item, simple calculation
+  if (items.length === 1) {
+    const pph = normalizePPH(items[0]?.standard);
+    return pph > 0 ? validCount / (pph / 3600) : 0;
+  }
+
+  // For multiple items, try to use per-item arrays
+  if (Array.isArray(s.totalByItem) && Array.isArray(s.timeCreditByItem)) {
+    return s.timeCreditByItem.reduce((sum, tc) => sum + (tc || 0), 0);
+  }
+
+  // Otherwise distribute counts evenly (approximation)
+  let total = 0;
+  for (const it of items) {
+    const pph = normalizePPH(it?.standard);
+    if (pph > 0) {
+      const itemCount = validCount / items.length; // rough approximation
+      total += itemCount / (pph / 3600);
+    }
+  }
+  return total;
+}
+
 /**
  * Helper function to calculate overlap factor between session and query window
  */
@@ -57,12 +144,12 @@ function buildMachineDailyTotal({ machineSerial, machineName, machineSessions, f
     for (const s of machineSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Handle both old (flat) and new (schema-adapted) session formats
-      const runtime = s.metrics?.timers?.run || s.runtime || 0;
-      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
-      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
-      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
-      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+      // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
+      const runtime = getRuntimeSeconds(s);
+      const workTime = getWorkedSeconds(s);
+      const totalTimeCredit = getTimeCreditSeconds(s);
+      const totalCount = getCountsValid(s);
+      const misfeedCount = getCountsMisfeed(s);
 
       runtimeSec += safe(runtime) * factor;
       workedTimeSec += safe(workTime) * factor;
@@ -161,11 +248,11 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
     for (const s of operatorSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Handle both old (flat) and new (schema-adapted) session formats
-      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
-      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
-      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
-      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+      // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
+      const workTime = getWorkedSeconds(s);
+      const totalTimeCredit = getTimeCreditSeconds(s);
+      const totalCount = getCountsValid(s);
+      const misfeedCount = getCountsMisfeed(s);
 
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
@@ -242,11 +329,11 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
     for (const s of itemSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Handle both old (flat) and new (schema-adapted) session formats
-      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
-      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
-      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
-      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
+      // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
+      const workTime = getWorkedSeconds(s);
+      const totalTimeCredit = getTimeCreditSeconds(s);
+      const totalCount = getCountsValid(s);
+      const misfeedCount = getCountsMisfeed(s);
 
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
@@ -331,12 +418,12 @@ function buildItemDailyTotal({ itemId, itemName, itemStandard, machineSerial, it
     for (const s of itemSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Handle both old (flat) and new (schema-adapted) session formats
-      const workTime = s.metrics?.timers?.worked || s.workTime || 0;
-      const totalTimeCredit = s.metrics?.totals?.timeCredit || s.totalTimeCredit || 0;
-      const totalCount = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
-      const misfeedCount = s.metrics?.totals?.counts?.misfeed || s.misfeedCount || 0;
-      const runtime = s.metrics?.timers?.run || s.runtime || 0;
+      // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
+      const workTime = getWorkedSeconds(s);
+      const totalTimeCredit = getTimeCreditSeconds(s);
+      const totalCount = getCountsValid(s);
+      const misfeedCount = getCountsMisfeed(s);
+      const runtime = getRuntimeSeconds(s);
 
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
@@ -424,7 +511,7 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
       // Get the overlap factor for this session
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Handle both old (flat) and new (schema-adapted) session formats
+      // ✅ Use normalizers and handle both computed and raw formats
       // Get per-item metrics from the session
       // totalCountByItem and timeCreditByItem are arrays aligned with s.items
       const countForItem = safe(s.totalCountByItem?.[itemIndex] || 0);
@@ -441,10 +528,10 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
 
       // Calculate worked time proportional to this item's contribution
       // If operator worked on multiple items, distribute time based on counts
-      const totalCountInSession = s.metrics?.totals?.counts?.valid || s.totalCount || 0;
+      const totalCountInSession = getCountsValid(s);
       if (totalCountInSession > 0) {
         const itemProportion = countForItem / totalCountInSession;
-        const workTime = s.metrics?.timers?.worked || s.workTime || 0;
+        const workTime = getWorkedSeconds(s);
         workedTimeSec += safe(workTime) * factor * itemProportion;
       }
       

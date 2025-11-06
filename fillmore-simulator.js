@@ -4,6 +4,7 @@
 const SimulationManager = require('./process-manager');
 const { validateAllMachines, getActiveMachines } = require('./fillmore-machines');
 const schemaValidator = require('./schema-validator');
+const config = require('./config');
 
 class FillmoreSimulator {
   constructor() {
@@ -13,6 +14,16 @@ class FillmoreSimulator {
   async start() {
     console.log('🏭 Fillmore Manufacturing Facility Simulator');
     console.log('==============================================');
+    
+    // Print MongoDB connection info
+    const mongoUri = config.mongoUri || 'Not configured';
+    // Mask credentials if present in URI
+    const maskedUri = mongoUri.includes('@') 
+      ? mongoUri.replace(/:\/\/[^:]+:[^@]+@/, '://****:****@') 
+      : mongoUri;
+    console.log(`\n📊 MongoDB Connection:`);
+    console.log(`   URI: ${maskedUri}`);
+    console.log(`   Database: ${config.dbName}`);
     
     try {
       // Validate configurations
