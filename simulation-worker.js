@@ -52,6 +52,12 @@ class MachineSimulator {
     this.cachedMachineSessions = [];                  // Machine sessions for today
     this.cachedFaultSessions = [];                    // Fault sessions for today
     this.cachedOperatorSessions = new Map();          // operatorId -> session array for today
+
+    // ⭐ MIDNIGHT ROLLOVER FLAGS
+    this.midnightShutdownDone = false;                // Tracks if 11:59pm shutdown has happened
+    this.wasRunningBeforeMidnight = false;            // Tracks if machine was running before shutdown
+    this.operatorsBeforeMidnight = [];                // Stores operators before midnight
+    this.itemsBeforeMidnight = [];                    // Stores items before midnight
     this.cachedItemSessions = new Map();              // itemId -> session array for today
     this.todayStart = null;                           // Midnight today (for filtering)
     this.cacheUpdateInterval = null;                  // Recurring interval for cache updates
@@ -172,6 +178,9 @@ class MachineSimulator {
       
       // ⭐ Load today's sessions into memory for real-time cache building
       await this.loadTodaysSessions();
+
+      // ⭐ Schedule automatic midnight shutdown/restart
+      this.scheduleMidnightRollover();
 
       this.isRunning = true;
       await this.simulationLoop();
@@ -318,16 +327,58 @@ class MachineSimulator {
   }
 
   /**
-   * ⭐ Handles day rollover at midnight
-   * Ends all open sessions, resets todayStart, and reloads cache for the new day
-   * @param {Date} newDayStart - Midnight of the new day
+   * ⭐ Schedules automatic midnight shutdown/restart
+   * At 11:59pm: Stop machines and end all sessions
+   * At 12:01am: Restart machines that were running
    */
-  async handleDayRollover(newDayStart) {
-    try {
-      console.log(`[${this.getTimestamp()}] 🌅 Handling day rollover to ${newDayStart.toISOString()}`);
+  scheduleMidnightRollover() {
+    const SYSTEM_TIMEZONE = 'America/Chicago';
 
-      // Create an "end of day" state record for closing sessions
-      const endOfDayState = {
+    // Check every minute if we need to do midnight actions
+    setInterval(() => {
+      const now = DateTime.now().setZone(SYSTEM_TIMEZONE);
+      const hour = now.hour;
+      const minute = now.minute;
+
+      // At 11:59pm, shutdown machines
+      if (hour === 23 && minute === 59 && !this.midnightShutdownDone) {
+        console.log(`[${this.getTimestamp()}] 🌙 11:59pm - Initiating midnight shutdown...`);
+        this.performMidnightShutdown();
+        this.midnightShutdownDone = true;
+      }
+
+      // At 12:01am (or up to 12:02am if we missed the exact minute), restart machines
+      if (hour === 0 && minute >= 1 && minute <= 2 && this.midnightShutdownDone) {
+        console.log(`[${this.getTimestamp()}] 🌅 12:0${minute}am - Initiating midnight restart...`);
+        this.performMidnightRestart();
+        this.midnightShutdownDone = false; // Reset for next day
+      }
+
+      // Reset flag at 12:03am in case we completely missed the restart window
+      if (hour === 0 && minute === 3 && this.midnightShutdownDone) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ Missed midnight restart window (12:01-12:02am), resetting flag`);
+        this.midnightShutdownDone = false;
+      }
+    }, 60000); // Check every 60 seconds
+
+    console.log(`[${this.getTimestamp()}] ⏰ Midnight rollover scheduler started`);
+  }
+
+  /**
+   * ⭐ Performs midnight shutdown at 11:59pm
+   * Stops machines, ends all sessions, updates cache
+   */
+  async performMidnightShutdown() {
+    try {
+      console.log(`[${this.getTimestamp()}] 🛑 Performing midnight shutdown...`);
+
+      // Remember if machine was running
+      this.wasRunningBeforeMidnight = this.inSession;
+      this.operatorsBeforeMidnight = this.currentRunningState?.operators || [];
+      this.itemsBeforeMidnight = this.buildCurrentItemsArray();
+
+      // Create shutdown state
+      const shutdownState = {
         timestamp: new Date(),
         machine: this.machineConfig,
         program: this.currentRunningState?.program || {
@@ -339,35 +390,24 @@ class MachineSimulator {
           stations: this.machineConfig.lanes || 1
         },
         operators: this.currentRunningState?.operators || [],
-        status: { code: 0, name: "End of Day", softrolColor: "Grey" }
+        status: { code: 0, name: "Midnight Shutdown", softrolColor: "Grey" }
       };
 
-      // 1. End all open sessions
-      console.log(`[${this.getTimestamp()}] 🛑 Ending all open sessions for day rollover...`);
-
-      // End machine session if one is open
+      // End all sessions
       if (this.currentSessionId) {
-        await this.endMachineSession(endOfDayState);
+        await this.endMachineSession(shutdownState);
       }
-
-      // End operator sessions if any are open
       if (this.operatorSessionIdsByStation.size > 0) {
-        await this.endOperatorSessions(endOfDayState);
+        await this.endOperatorSessions(shutdownState);
       }
-
-      // End fault session if one is open
       if (this.currentFaultSessionId) {
-        await this.endFaultSession(endOfDayState);
+        await this.endFaultSession(shutdownState);
       }
+      await this.closeOpenOperatorSessions(shutdownState);
 
-      // Defensive cleanup for any lingering operator sessions
-      await this.closeOpenOperatorSessions(endOfDayState);
-
-      console.log(`[${this.getTimestamp()}] ✅ All sessions closed for day rollover`);
-
-      // 2. Update cache one final time for yesterday's data
-      console.log(`[${this.getTimestamp()}] 📊 Running final cache update for previous day...`);
-      const result = await recalculateAndUpdateCache({
+      // Final cache update for the day
+      console.log(`[${this.getTimestamp()}] 📊 Running final cache update for ${this.todayStart.toISOString().split('T')[0]}...`);
+      await recalculateAndUpdateCache({
         db: this.client.db(this.dbName),
         machineSerial: this.machineConfig.id || this.machineConfig.serial,
         machineName: this.machineConfig.name,
@@ -379,12 +419,25 @@ class MachineSimulator {
         queryEnd: new Date()
       });
 
-      if (result.success) {
-        console.log(`[${this.getTimestamp()}] ✅ Final cache update completed: ${result.recordsUpdated} records`);
-      }
+      console.log(`[${this.getTimestamp()}] ✅ Midnight shutdown complete. Waiting for 12:01am restart...`);
 
-      // 3. Reset todayStart and reload sessions for the new day
-      console.log(`[${this.getTimestamp()}] 🔄 Reloading sessions for new day...`);
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error during midnight shutdown:`, error);
+    }
+  }
+
+  /**
+   * ⭐ Performs midnight restart at 12:01am
+   * Resets cache, loads new day sessions, restarts machines
+   */
+  async performMidnightRestart() {
+    try {
+      const SYSTEM_TIMEZONE = 'America/Chicago';
+      const newDayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
+
+      console.log(`[${this.getTimestamp()}] 🌅 Performing midnight restart for ${newDayStart.toISOString().split('T')[0]}...`);
+
+      // Update todayStart to new day
       this.todayStart = newDayStart;
 
       // Clear old cache arrays
@@ -393,51 +446,47 @@ class MachineSimulator {
       this.cachedOperatorSessions.clear();
       this.cachedItemSessions.clear();
 
-      // Reload sessions for the new day (don't restart interval - it's already running)
+      // Reload sessions for new day
       await this.loadTodaysSessions(false);
 
-      console.log(`[${this.getTimestamp()}] 🎉 Day rollover complete! Now running on ${newDayStart.toISOString()}`);
+      // Restart machines if they were running before midnight
+      if (this.wasRunningBeforeMidnight) {
+        console.log(`[${this.getTimestamp()}] 🔄 Restarting machines that were running before midnight...`);
 
-      // 4. If machine was in a running state, start new sessions for the new day
-      if (this.inSession) {
-        console.log(`[${this.getTimestamp()}] 🔄 Machine was running, starting new sessions for new day...`);
-
-        // Create a new running state
-        const newRunningState = {
+        const restartState = {
           timestamp: new Date(),
           machine: this.machineConfig,
-          program: this.currentRunningState?.program || {
+          program: {
             mode: "smallPiece",
             programNumber: 1,
             batchNumber: Math.floor(Math.random() * 21) + 20,
             accountNumber: 0,
             speed: 0,
             stations: this.machineConfig.lanes || 1,
-            items: this.buildCurrentItemsArray()
+            items: this.itemsBeforeMidnight
           },
-          operators: this.currentRunningState?.operators || [],
+          operators: this.operatorsBeforeMidnight,
           status: { code: 1, name: "Run", softrolColor: "Green" }
         };
 
-        // Start new sessions for the new day
-        await this.startMachineSession(newRunningState);
-        await this.startOperatorSessions(newRunningState);
-        await this.startItemSessions(newRunningState);
+        await this.startMachineSession(restartState);
+        await this.startOperatorSessions(restartState);
+        await this.startItemSessions(restartState);
 
-        console.log(`[${this.getTimestamp()}] ✅ New sessions started for new day`);
+        console.log(`[${this.getTimestamp()}] ✅ Machines restarted for new day`);
       }
 
+      console.log(`[${this.getTimestamp()}] 🎉 Midnight restart complete! Now running on ${newDayStart.toISOString().split('T')[0]}`);
+
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error handling day rollover:`, error);
-      // Try to recover by at least resetting todayStart
-      this.todayStart = newDayStart;
+      console.error(`[${this.getTimestamp()}] ❌ Error during midnight restart:`, error);
     }
   }
 
   /**
    * ⭐ Recalculates and updates daily cache totals using in-memory session data
    * This is called after session updates to keep cache up-to-date in real-time
-   * Also handles day rollover by detecting midnight crossings
+   * Note: Day rollover is now handled by scheduleMidnightRollover() at 11:59pm/12:01am
    */
   async recalculateDailyCacheTotals() {
     try {
@@ -448,16 +497,6 @@ class MachineSimulator {
 
       const db = this.client.db(this.dbName);
       const now = new Date();
-
-      // ⭐ Check if we've crossed midnight (day change detection)
-      const SYSTEM_TIMEZONE = 'America/Chicago';
-      const currentDayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
-
-      if (currentDayStart.getTime() !== this.todayStart.getTime()) {
-        console.log(`[${this.getTimestamp()}] 🌅 Day change detected! Rolling over from ${this.todayStart.toISOString()} to ${currentDayStart.toISOString()}`);
-        await this.handleDayRollover(currentDayStart);
-        return; // Exit early - handleDayRollover will trigger a fresh cache update
-      }
 
       // Recalculate and update cache using in-memory session arrays
       const result = await recalculateAndUpdateCache({
@@ -1802,7 +1841,8 @@ class MachineSimulator {
       await this.delay(getRandomDelay(2, 75));
       if (!this.isRunning) break;
 
-      const nextState = Math.random() < 0.45 ? "Timeout" : "Fault";
+      // Real-world scenario: 5% chance of fault, 95% chance of normal timeout
+      const nextState = Math.random() < 0.05 ? "Fault" : "Timeout";
       await this.writeState(nextState);
 
       // Select next item when machine stops (before delay)
