@@ -1039,9 +1039,17 @@ class MachineSimulator {
 
       // Calculate work time (runtime * active stations)
       // Don't count dummy operators as "active stations" in machine-session stats
-      const activeStations = Array.isArray(session.operators)
+      let activeStations = Array.isArray(session.operators)
         ? session.operators.filter(op => op && op.id !== -1).length
         : 0;
+
+      // ✅ Fallback to program.stations or machine.lanes if operators array is empty/missing
+      if (!activeStations || !Number.isFinite(activeStations)) {
+        activeStations = Number.isFinite(session.program?.stations) && session.program.stations > 0
+          ? session.program.stations
+          : (Number.isFinite(session.machine?.lanes) && session.machine.lanes > 0 ? session.machine.lanes : 1);
+      }
+
       const workTime = runtime * activeStations;
 
       // Calculate total counts (adapted sessions have counts as object with valid/misfeed arrays)
