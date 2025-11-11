@@ -1,0 +1,30 @@
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:17.525Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:17.525Z"}
+{"level":"warn","message":"[2025-11-11T14:56:17.544Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:17.544Z"}
+{"itemTotals":4,"level":"info","machine":"SPF2","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":4,"operatorTotals":1,"recordsUpdated":14,"timestamp":"2025-11-11T14:56:18.373Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:19.363Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:19.364Z"}
+{"level":"warn","message":"[2025-11-11T14:56:19.385Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:19.385Z"}
+{"itemTotals":4,"level":"info","machine":"SPF3","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":4,"operatorTotals":1,"recordsUpdated":14,"timestamp":"2025-11-11T14:56:19.492Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:20.504Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:20.504Z"}
+{"level":"warn","message":"[2025-11-11T14:56:20.524Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:20.524Z"}
+{"itemTotals":4,"level":"info","machine":"SPF4","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":4,"operatorTotals":1,"recordsUpdated":14,"timestamp":"2025-11-11T14:56:20.638Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:22.008Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:22.008Z"}
+{"level":"warn","message":"[2025-11-11T14:56:22.031Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:22.031Z"}
+{"itemTotals":4,"level":"info","machine":"SPF5","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":4,"operatorTotals":1,"recordsUpdated":14,"timestamp":"2025-11-11T14:56:22.126Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:23.742Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:23.742Z"}
+{"level":"warn","message":"[2025-11-11T14:56:23.769Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:23.769Z"}
+{"itemTotals":4,"level":"info","machine":"SPF6","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":4,"operatorTotals":1,"recordsUpdated":14,"timestamp":"2025-11-11T14:56:23.889Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:24.870Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:24.871Z"}
+{"level":"warn","message":"[2025-11-11T14:56:24.895Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:24.895Z"}
+{"itemTotals":1,"level":"info","machine":"LPL1","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":3,"operatorTotals":3,"recordsUpdated":9,"timestamp":"2025-11-11T14:56:25.049Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:25.829Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:25.830Z"}
+{"level":"warn","message":"[2025-11-11T14:56:25.848Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:25.848Z"}
+{"itemTotals":1,"level":"info","machine":"LPL2","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":3,"operatorTotals":3,"recordsUpdated":9,"timestamp":"2025-11-11T14:56:25.975Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:27.429Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:27.429Z"}
+{"level":"warn","message":"[2025-11-11T14:56:27.451Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:27.451Z"}
+{"itemTotals":1,"level":"info","machine":"Blanket1","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":2,"operatorTotals":2,"recordsUpdated":7,"timestamp":"2025-11-11T14:56:27.567Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:29.188Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:29.188Z"}
+{"level":"warn","message":"[2025-11-11T14:56:29.208Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:29.208Z"}
+{"itemTotals":1,"level":"info","machine":"Blanket2","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":2,"operatorTotals":2,"recordsUpdated":7,"timestamp":"2025-11-11T14:56:29.363Z"}
+{"dbName":"chitrac","level":"info","message":"[2025-11-11T14:56:30.990Z] ✅ Connected to MongoDB","timestamp":"2025-11-11T14:56:30.991Z"}
+{"level":"warn","message":"[2025-11-11T14:56:31.012Z] ⚠️ Only 57 fault codes found (expected 58)","timestamp":"2025-11-11T14:56:31.013Z"}
+{"itemTotals":1,"level":"info","machine":"SPL1","machineTotals":1,"message":"Boot-time cache reconstruction complete","operatorItemTotals":4,"operatorTotals":4,"recordsUpdated":11,"timestamp":"2025-11-11T14:56:31.183Z"}
