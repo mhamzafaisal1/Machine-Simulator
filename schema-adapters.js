@@ -697,6 +697,80 @@ function adaptSession(session, options = {}) {
   return adapted;
 }
 
+const TIMESTAMP_FIELD_KEYS = new Set(['create', 'active', 'update', 'start', 'end', 'inactive']);
+
+function isPlainObject(value) {
+  return Object.prototype.toString.call(value) === '[object Object]';
+}
+
+function isIsoDateString(value) {
+  if (typeof value !== 'string') return false;
+  const time = Date.parse(value);
+  return !Number.isNaN(time);
+}
+
+function convertTimestampValue(value, direction) {
+  if (direction === 'toDate') {
+    if (value instanceof Date) return value;
+    if (isIsoDateString(value)) return new Date(value);
+    return value;
+  }
+  // toString direction
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
+  return value;
+}
+
+function transformTimestampsObject(obj, direction) {
+  const result = {};
+  for (const [key, val] of Object.entries(obj || {})) {
+    if (val === undefined) {
+      result[key] = val;
+      continue;
+    }
+    if (TIMESTAMP_FIELD_KEYS.has(key)) {
+      result[key] = convertTimestampValue(val, direction);
+    } else if (Array.isArray(val)) {
+      result[key] = val.map((entry) => convertNestedTimestamps(entry, direction));
+    } else if (isPlainObject(val)) {
+      result[key] = convertNestedTimestamps(val, direction);
+    } else {
+      result[key] = convertTimestampValue(val, direction);
+    }
+  }
+  return result;
+}
+
+function convertNestedTimestamps(value, direction) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => convertNestedTimestamps(entry, direction));
+  }
+  if (!isPlainObject(value)) {
+    return convertTimestampValue(value, direction);
+  }
+  const result = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (key === 'timestamps' && isPlainObject(val)) {
+      result[key] = transformTimestampsObject(val, direction);
+    } else if (key.toLowerCase() === 'timestamp') {
+      result[key] = convertTimestampValue(val, direction);
+    } else if (TIMESTAMP_FIELD_KEYS.has(key) && !isPlainObject(val)) {
+      result[key] = convertTimestampValue(val, direction);
+    } else {
+      result[key] = convertNestedTimestamps(val, direction);
+    }
+  }
+  return result;
+}
+
+function prepareDocForMongo(doc) {
+  return convertNestedTimestamps(doc, 'toDate');
+}
+
+function prepareDocFromMongo(doc) {
+  return convertNestedTimestamps(doc, 'toString');
+}
+
 module.exports = {
   createTimestamps,
   createSessionTimestamps,
@@ -717,5 +791,7 @@ module.exports = {
   adaptSession,
   createDefaultShift,
   parseIPAddress,
-  adaptFaultFromDB
+  adaptFaultFromDB,
+  prepareDocForMongo,
+  prepareDocFromMongo
 };
