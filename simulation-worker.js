@@ -74,6 +74,26 @@ function buildSerialQueryValues(serial) {
   return [...values];
 }
 
+function buildOverlapFilter(serialField, serialValues, dayStart) {
+  return {
+    [serialField]: { $in: serialValues },
+    $or: [
+      { 'timestamps.start': { $gte: dayStart } },
+      {
+        $and: [
+          { 'timestamps.start': { $lt: dayStart } },
+          {
+            $or: [
+              { 'timestamps.end': { $exists: false } },
+              { 'timestamps.end': { $gte: dayStart } }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+}
+
 class MachineSimulator {
   constructor(machineConfig) {
     this.machineConfig = machineConfig;
@@ -321,28 +341,28 @@ class MachineSimulator {
       
       // 1. Load machine sessions for this machine today
       const machineSessionColl = db.collection(config.machineSessionCollectionName);
-      this.cachedMachineSessions = await machineSessionColl.find({
-        'machine.id': { $in: machineSerialValues },
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const machineSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart);
+      this.cachedMachineSessions = await machineSessionColl.find(machineSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
       
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
       
       // 2. Load fault sessions for this machine today
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
-      this.cachedFaultSessions = await faultSessionColl.find({
-        'machine.id': { $in: machineSerialValues },
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const faultSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart);
+      this.cachedFaultSessions = await faultSessionColl.find(faultSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
       
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedFaultSessions.length} fault sessions`);
       
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
-      const operatorSessions = await operatorSessionColl.find({
-        'counts.machine.id': { $in: machineSerialValues },
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const operatorSessionFilter = buildOverlapFilter('counts.machine.id', machineSerialValues, this.todayStart);
+      const operatorSessions = await operatorSessionColl.find(operatorSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
       
       // Group by operator ID
       for (const session of operatorSessions) {
@@ -359,10 +379,10 @@ class MachineSimulator {
       
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
-      const itemSessions = await itemSessionColl.find({
-        'machine.id': { $in: machineSerialValues },
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const itemSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart);
+      const itemSessions = await itemSessionColl.find(itemSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
       
       // Group by item ID
       for (const session of itemSessions) {

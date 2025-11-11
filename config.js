@@ -3,9 +3,9 @@ require('dotenv').config();
 // config.js - Auto-generated from CLI arguments with environment variables
 module.exports = {
     // MongoDB connection settings (centralized)
-    mongoUri: process.env.MONGO_URI,
-    mongoUsername: process.env.MONGO_USERNAME,
-    mongoPassword: process.env.MONGO_PASSWORD,
+    mongoUri: "mongodb://localhost:27017/chitrac",
+    // mongoUsername: process.env.MONGO_USERNAME,
+    // mongoPassword: process.env.MONGO_PASSWORD,
     dbName: 'chitrac',
     collectionName: 'state-machine', // Renamed from 'state' to 'state-machine'
     countCollectionName: 'count',
