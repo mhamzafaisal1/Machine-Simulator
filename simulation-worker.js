@@ -74,23 +74,79 @@ function buildSerialQueryValues(serial) {
   return [...values];
 }
 
-function buildOverlapFilter(serialField, serialValues, dayStart) {
-  return {
-    [serialField]: { $in: serialValues },
-    $or: [
+function buildOverlapFilter(serialField, serialValues, dayStart, queryEnd) {
+  const dayStartIso = dayStart.toISOString();
+  const queryEndIso = queryEnd ? queryEnd.toISOString() : null;
+
+  const startIsDate = {
+    $and: [
+      { 'timestamps.start': { $type: 'date' } },
       { 'timestamps.start': { $gte: dayStart } },
+      ...(queryEnd ? [{ 'timestamps.start': { $lt: queryEnd } }] : [])
+    ]
+  };
+
+  const startIsString = {
+    $and: [
+      { 'timestamps.start': { $type: 'string' } },
+      { 'timestamps.start': { $gte: dayStartIso } },
+      ...(queryEndIso ? [{ 'timestamps.start': { $lt: queryEndIso } }] : [])
+    ]
+  };
+
+  const overlapDate = {
+    $and: [
+      { 'timestamps.start': { $type: 'date' } },
+      { 'timestamps.start': { $lt: dayStart } },
       {
-        $and: [
-          { 'timestamps.start': { $lt: dayStart } },
+        $or: [
+          { 'timestamps.end': { $exists: false } },
+          { 'timestamps.end': null },
           {
-            $or: [
-              { 'timestamps.end': { $exists: false } },
+            $and: [
+              { 'timestamps.end': { $type: 'date' } },
               { 'timestamps.end': { $gte: dayStart } }
+            ]
+          },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'string' } },
+              { 'timestamps.end': { $gte: dayStartIso } }
             ]
           }
         ]
       }
     ]
+  };
+
+  const overlapString = {
+    $and: [
+      { 'timestamps.start': { $type: 'string' } },
+      { 'timestamps.start': { $lt: dayStartIso } },
+      {
+        $or: [
+          { 'timestamps.end': { $exists: false } },
+          { 'timestamps.end': null },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'date' } },
+              { 'timestamps.end': { $gte: dayStart } }
+            ]
+          },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'string' } },
+              { 'timestamps.end': { $gte: dayStartIso } }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  return {
+    [serialField]: { $in: serialValues },
+    $or: [startIsDate, startIsString, overlapDate, overlapString]
   };
 }
 
@@ -358,20 +414,20 @@ class MachineSimulator {
       const now = new Date();
       
       console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
-      
+
       // 1. Load machine sessions for this machine today
       const machineSessionColl = db.collection(config.machineSessionCollectionName);
-      const machineSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart);
+      const machineSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
       const machineSessionsRaw = await machineSessionColl.find(machineSessionFilter)
         .sort({ 'timestamps.start': 1 })
         .toArray();
       this.cachedMachineSessions = machineSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
-      
+
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
       
       // 2. Load fault sessions for this machine today
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
-      const faultSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart);
+      const faultSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
       const faultSessionsRaw = await faultSessionColl.find(faultSessionFilter)
         .sort({ 'timestamps.start': 1 })
         .toArray();
@@ -381,7 +437,7 @@ class MachineSimulator {
       
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
-      const operatorSessionFilter = buildOverlapFilter('counts.machine.id', machineSerialValues, this.todayStart);
+      const operatorSessionFilter = buildOverlapFilter('counts.machine.id', machineSerialValues, this.todayStart, now);
       const operatorSessionsRaw = await operatorSessionColl.find(operatorSessionFilter)
         .sort({ 'timestamps.start': 1 })
         .toArray();
@@ -402,7 +458,7 @@ class MachineSimulator {
       
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
-      const itemSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart);
+      const itemSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
       const itemSessionsRaw = await itemSessionColl.find(itemSessionFilter)
         .sort({ 'timestamps.start': 1 })
         .toArray();
