@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 30
+    },
+    "auditLog": "C:\\Users\\hfaisal\\Desktop\\Repos\\machine-simulator\\logs\\.8691738e9049070d4c8483794118c996d252191f-audit.json",
+    "files": [
+        {
+            "date": 1762872977477,
+            "name": "C:\\Users\\hfaisal\\Desktop\\Repos\\machine-simulator\\logs\\2025-11-11_info.log",
+            "hash": "f1b7e618ce80fa4ea7067e879d1b4652efad1d2588707cf046a435da8780c88a"
+        }
+    ],
+    "hashType": "sha256"
+}

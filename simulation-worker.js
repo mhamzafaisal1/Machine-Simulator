@@ -19,6 +19,156 @@ const {
 } = require('./simulator-cache-builder');
 const schemaValidator = require('./schema-validator');
 const schemaAdapters = require('./schema-adapters');
+const createLogger = require('./logger');
+
+const logger = createLogger(config.mongoUri);
+
+function toMeta(details) {
+  if (!details) return undefined;
+  if (details instanceof Error) {
+    return { error: details.message, stack: details.stack };
+  }
+  if (typeof details === 'string') {
+    return { message: details };
+  }
+  if (details.error instanceof Error) {
+    return { ...details, error: details.error.message, stack: details.error.stack };
+  }
+  return details;
+}
+
+function logWith(level, message, details) {
+  const meta = toMeta(details);
+  if (logger && typeof logger[level] === 'function') {
+    logger[level](message, meta);
+  }
+
+  const consoleFn = level === 'error'
+    ? console.error
+    : level === 'warn'
+      ? console.warn
+      : console.log;
+
+  if (meta) {
+    consoleFn(message, meta);
+  } else {
+    consoleFn(message);
+  }
+}
+
+const logInfo = (message, details) => logWith('info', message, details);
+const logWarn = (message, details) => logWith('warn', message, details);
+const logError = (message, details) => logWith('error', message, details);
+
+function buildSerialQueryValues(serial) {
+  const values = new Set();
+  if (serial !== undefined && serial !== null) {
+    values.add(serial);
+    const numeric = Number(serial);
+    if (!Number.isNaN(numeric)) {
+      values.add(numeric);
+    }
+    const str = String(serial);
+    values.add(str);
+  }
+  return [...values];
+}
+
+function buildOverlapFilter(serialField, serialValues, dayStart, queryEnd) {
+  const dayStartIso = dayStart.toISOString();
+  const queryEndIso = queryEnd ? queryEnd.toISOString() : null;
+
+  const startIsDate = {
+    $and: [
+      { 'timestamps.start': { $type: 'date' } },
+      { 'timestamps.start': { $gte: dayStart } },
+      ...(queryEnd ? [{ 'timestamps.start': { $lt: queryEnd } }] : [])
+    ]
+  };
+
+  const startIsString = {
+    $and: [
+      { 'timestamps.start': { $type: 'string' } },
+      { 'timestamps.start': { $gte: dayStartIso } },
+      ...(queryEndIso ? [{ 'timestamps.start': { $lt: queryEndIso } }] : [])
+    ]
+  };
+
+  const overlapDate = {
+    $and: [
+      { 'timestamps.start': { $type: 'date' } },
+      { 'timestamps.start': { $lt: dayStart } },
+      {
+        $or: [
+          { 'timestamps.end': { $exists: false } },
+          { 'timestamps.end': null },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'date' } },
+              { 'timestamps.end': { $gte: dayStart } }
+            ]
+          },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'string' } },
+              { 'timestamps.end': { $gte: dayStartIso } }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  const overlapString = {
+    $and: [
+      { 'timestamps.start': { $type: 'string' } },
+      { 'timestamps.start': { $lt: dayStartIso } },
+      {
+        $or: [
+          { 'timestamps.end': { $exists: false } },
+          { 'timestamps.end': null },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'date' } },
+              { 'timestamps.end': { $gte: dayStart } }
+            ]
+          },
+          {
+            $and: [
+              { 'timestamps.end': { $type: 'string' } },
+              { 'timestamps.end': { $gte: dayStartIso } }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  return {
+    [serialField]: { $in: serialValues },
+    $or: [startIsDate, startIsString, overlapDate, overlapString]
+  };
+}
+
+function normalizeId(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    if (typeof value.toHexString === 'function') return value.toHexString();
+    if (typeof value.toString === 'function') return value.toString();
+  }
+  try {
+    return String(value);
+  } catch (err) {
+    return null;
+  }
+}
+
+function idsEqual(a, b) {
+  const normA = normalizeId(a);
+  const normB = normalizeId(b);
+  return normA !== null && normB !== null && normA === normB;
+}
 
 class MachineSimulator {
   constructor(machineConfig) {
@@ -95,7 +245,7 @@ class MachineSimulator {
 
       // Validate that we have exactly 4 items for SPF
       if (this.currentItems.length !== 4) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
         this.currentItems = [this.currentItem, this.currentItem, this.currentItem, this.currentItem];
       }
     }
@@ -127,7 +277,7 @@ class MachineSimulator {
 
       // Validate that we have exactly 4 items for SPF
       if (this.currentItems.length !== 4) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
         this.currentItems = [it, it, it, it];
       }
 
@@ -144,7 +294,7 @@ class MachineSimulator {
     }
 
     if (items.length < n) {
-      console.warn(`[${this.getTimestamp()}] ⚠️ Only ${items.length} items available, but ${n} requested. Will use available items.`);
+      logWarn(`[${this.getTimestamp()}] ⚠️ Only ${items.length} items available, but ${n} requested. Will use available items.`);
     }
 
     const copy = [...items];
@@ -167,7 +317,7 @@ class MachineSimulator {
 
       // Validate that we have enough items for SPF machines
       if (this.isSpf() && this.items.length < 4) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine requires at least 4 items, but only ${this.items.length} are available`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF machine requires at least 4 items, but only ${this.items.length} are available`);
       }
 
       this.selectInitialItem();
@@ -185,7 +335,11 @@ class MachineSimulator {
       this.isRunning = true;
       await this.simulationLoop();
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Failed to start simulator:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Failed to start simulator`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
       throw error;
     }
   }
@@ -193,7 +347,7 @@ class MachineSimulator {
   async connectToMongoDB() {
     this.client = new MongoClient(this.mongoUri);
     await this.client.connect();
-    console.log(`[${this.getTimestamp()}] ✅ Connected to MongoDB`);
+    logInfo(`[${this.getTimestamp()}] ✅ Connected to MongoDB`, { dbName: this.dbName });
   }
 
   async loadFaults() {
@@ -212,11 +366,11 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] ✅ Fault schema validation: ${ok}/${adapted.length} adapted faults valid`);
       this.adaptedFaults = adapted; // optional reference
     } catch (e) {
-      console.warn(`[${this.getTimestamp()}] ⚠️ Fault validation skipped: ${e.message}`);
+      logWarn(`[${this.getTimestamp()}] ⚠️ Fault validation skipped: ${e.message}`);
     }
 
     if (this.validFaults.length < 58) {
-      console.warn(`[${this.getTimestamp()}] ⚠️ Only ${this.validFaults.length} fault codes found (expected 58)`);
+      logWarn(`[${this.getTimestamp()}] ⚠️ Only ${this.validFaults.length} fault codes found (expected 58)`);
     }
   }
 
@@ -248,6 +402,11 @@ class MachineSimulator {
       
       const db = this.client.db(this.dbName);
       const machineSerial = this.machineConfig.id || this.machineConfig.serial;
+      const machineSerialValues = buildSerialQueryValues(machineSerial);
+      if (machineSerialValues.length === 0) {
+        logWarn(`[${this.getTimestamp()}] ⚠️ Machine serial not available; skipping boot cache hydration`);
+        return;
+      }
       
       // Calculate today's start (midnight in America/Chicago timezone)
       const SYSTEM_TIMEZONE = 'America/Chicago';
@@ -255,31 +414,34 @@ class MachineSimulator {
       const now = new Date();
       
       console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
-      
+
       // 1. Load machine sessions for this machine today
       const machineSessionColl = db.collection(config.machineSessionCollectionName);
-      this.cachedMachineSessions = await machineSessionColl.find({
-        'machine.id': machineSerial,  // In this system, machine.id is the serial number
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
-      
+      const machineSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
+      const machineSessionsRaw = await machineSessionColl.find(machineSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
+      this.cachedMachineSessions = machineSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
+
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
       
       // 2. Load fault sessions for this machine today
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
-      this.cachedFaultSessions = await faultSessionColl.find({
-        'machine.id': machineSerial,  // In this system, machine.id is the serial number
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const faultSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
+      const faultSessionsRaw = await faultSessionColl.find(faultSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
+      this.cachedFaultSessions = faultSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
       
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedFaultSessions.length} fault sessions`);
       
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
-      const operatorSessions = await operatorSessionColl.find({
-        'counts.machine.id': machineSerial,  // Operator sessions have machine info nested in counts array
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const operatorSessionFilter = buildOverlapFilter('counts.machine.id', machineSerialValues, this.todayStart, now);
+      const operatorSessionsRaw = await operatorSessionColl.find(operatorSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
+      const operatorSessions = operatorSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
       
       // Group by operator ID
       for (const session of operatorSessions) {
@@ -296,10 +458,11 @@ class MachineSimulator {
       
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
-      const itemSessions = await itemSessionColl.find({
-        'machine.id': machineSerial,  // In this system, machine.id is the serial number
-        'timestamps.start': { $gte: this.todayStart }
-      }).sort({ 'timestamps.start': 1 }).toArray();
+      const itemSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
+      const itemSessionsRaw = await itemSessionColl.find(itemSessionFilter)
+        .sort({ 'timestamps.start': 1 })
+        .toArray();
+      const itemSessions = itemSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
       
       // Group by item ID
       for (const session of itemSessions) {
@@ -315,13 +478,64 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
       console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
 
+      // ⭐ BOOT-TIME CACHE RECONSTRUCTION
+      // If there are existing sessions from midnight to now, rebuild the cache totals
+      if (this.cachedMachineSessions.length > 0 || operatorSessions.length > 0 || itemSessions.length > 0) {
+        console.log(`[${this.getTimestamp()}] 📊 Boot-time cache reconstruction: Found existing sessions, rebuilding totals-daily cache...`);
+
+        try {
+          const result = await recalculateAndUpdateCache({
+            db: db,
+            machineSerial: machineSerial,
+            machineName: this.machineConfig.name,
+            machineSessions: this.cachedMachineSessions,
+            faultSessions: this.cachedFaultSessions,
+            operatorSessionsMap: this.cachedOperatorSessions,
+            itemSessionsMap: this.cachedItemSessions,
+            queryStart: this.todayStart,
+            queryEnd: now
+          });
+
+          if (result.success) {
+            console.log(`[${this.getTimestamp()}] ✅ Boot-time cache reconstruction complete: ${result.recordsUpdated} records updated`);
+            console.log(`[${this.getTimestamp()}]    Machine: ${result.machineUpdated ? '✅' : '⏭️'}, Operators: ${result.operatorsUpdated}, Items: ${result.itemsUpdated}`);
+            logInfo('Boot-time cache reconstruction complete', {
+              machine: this.machineConfig.name,
+              recordsUpdated: result.recordsUpdated,
+              machineTotals: result.machineTotals,
+              operatorTotals: result.operatorTotals,
+              itemTotals: result.itemTotals,
+              operatorItemTotals: result.operatorItemTotals
+            });
+          } else {
+            logWarn(`[${this.getTimestamp()}] ⚠️ Boot-time cache reconstruction had issues`, {
+              machine: this.machineConfig.name,
+              error: result.error
+            });
+          }
+        } catch (cacheError) {
+          logError(`[${this.getTimestamp()}] ❌ Error during boot-time cache reconstruction`, {
+            machine: this.machineConfig.name,
+            error: cacheError.message,
+            stack: cacheError.stack
+          });
+          // Don't throw - continue with simulation even if cache rebuild fails
+        }
+      } else {
+        console.log(`[${this.getTimestamp()}] ℹ️ No existing sessions found from midnight to now, starting fresh`);
+      }
+
       // ⭐ Start the recurring cache update interval (only if requested)
       if (startInterval) {
         this.startCacheUpdateInterval();
       }
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error loading today's sessions:`, error);
+      logError(`[${this.getTimestamp()}] ❌ Error loading today's sessions`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
       // Don't throw - simulator can continue without cache, it just won't update cache totals
     }
   }
@@ -356,7 +570,7 @@ class MachineSimulator {
 
       // Reset flag at 12:03am in case we completely missed the restart window
       if (hour === 0 && minute === 3 && this.midnightShutdownDone) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ Missed midnight restart window (12:01-12:02am), resetting flag`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ Missed midnight restart window (12:01-12:02am), resetting flag`);
         this.midnightShutdownDone = false;
       }
     }, 60000); // Check every 60 seconds
@@ -422,7 +636,11 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] ✅ Midnight shutdown complete. Waiting for 12:01am restart...`);
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error during midnight shutdown:`, error);
+      logError(`[${this.getTimestamp()}] ❌ Error during midnight shutdown`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -479,7 +697,11 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] 🎉 Midnight restart complete! Now running on ${newDayStart.toISOString().split('T')[0]}`);
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error during midnight restart:`, error);
+      logError(`[${this.getTimestamp()}] ❌ Error during midnight restart`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -491,7 +713,7 @@ class MachineSimulator {
   async recalculateDailyCacheTotals() {
     try {
       if (!this.todayStart) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ todayStart not set, skipping cache recalculation`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ todayStart not set, skipping cache recalculation`);
         return;
       }
 
@@ -514,11 +736,18 @@ class MachineSimulator {
       if (result.success) {
         console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.machineItemTotals} machine-items, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
       } else {
-        console.error(`[${this.getTimestamp()}] ❌ Cache update failed: ${result.error}`);
+        logError(`[${this.getTimestamp()}] ❌ Cache update failed`, {
+          machine: this.machineConfig.name,
+          error: result.error
+        });
       }
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error recalculating daily cache totals:`, error);
+      logError(`[${this.getTimestamp()}] ❌ Error recalculating daily cache totals`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
       // Don't throw - cache updates are non-critical
     }
   }
@@ -564,7 +793,7 @@ class MachineSimulator {
 
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4`);
       }
     } else {
       this.currentItem = selectRandomItem(this.items);       // exactly one
@@ -600,7 +829,7 @@ class MachineSimulator {
 
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4 after item change`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4 after item change`);
       }
     } else {
       this.currentItem = selectRandomItem(this.items);
@@ -611,7 +840,7 @@ class MachineSimulator {
   getRandomFault() {
     const faultCount = this.validFaults.length;
     if (faultCount === 0) {
-      console.warn(`[${this.getTimestamp()}] ⚠️ No fault codes loaded. Using fallback.`);
+      logWarn(`[${this.getTimestamp()}] ⚠️ No fault codes loaded. Using fallback.`);
       return { code: 17, name: "Fault" };
     }
 
@@ -619,7 +848,7 @@ class MachineSimulator {
     const fault = this.validFaults[index];
 
     if (!fault) {
-      console.warn(`[${this.getTimestamp()}] ⚠️ Fault at index ${index} is undefined. Using fallback.`);
+      logWarn(`[${this.getTimestamp()}] ⚠️ Fault at index ${index} is undefined. Using fallback.`);
       return { code: 17, name: "Fault" };
     }
 
@@ -745,7 +974,7 @@ class MachineSimulator {
         } catch (error) {
           if (error.code === 11000) {
             // Someone else grabbed it—pick a different one once
-            console.warn(`[${this.getTimestamp()}] ⚠️ Duplicate operator ${candidateOperator.id}; selecting another`);
+            logWarn(`[${this.getTimestamp()}] ⚠️ Duplicate operator ${candidateOperator.id}; selecting another`);
             const altPoolDb = await operatorsCollection.find(
               { code: { $lt: 500000, $nin: currentlySimulatedIds } },
               { projection: { _id: 0, code: 1, name: 1, rate: 1 } }
@@ -756,7 +985,11 @@ class MachineSimulator {
             const altFullName = alt ? `${alt.name.first} ${alt.name.surname || ''}`.trim() : "Unknown";
             assignedOperators.push({ id: alt ? alt.id : -1, name: altFullName, rate: alt?._rate || 1 , station });
           } else {
-            console.error(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.id} to station ${station}:`, error.message);
+            logError(`[${this.getTimestamp()}] ❌ Failed to assign operator ${candidateOperator.id} to station ${station}`, {
+              machine: machineSerial,
+              station,
+              error: error.message
+            });
             // Fallback to dummy operator
             assignedOperators.push({ id: -1, name: "Dummy", station, rate: 1 });
           }
@@ -776,16 +1009,24 @@ class MachineSimulator {
   async cleanupOperatorAssignments() {
     const db = this.client.db(this.dbName);
     const machineSerial = this.machineConfig.id || this.machineConfig.serial;
+    const machineSerialValues = buildSerialQueryValues(machineSerial);
     const tickerCollection = db.collection(config.simulatedOperatorsTickerCollectionName);
 
     try {
       // Remove all operator assignments for this machine
-      const result = await tickerCollection.deleteMany({ machineSerial: machineSerial });
+      const deleteFilter = machineSerialValues.length
+        ? { machineSerial: { $in: machineSerialValues } }
+        : { machineSerial };
+      const result = await tickerCollection.deleteMany(deleteFilter);
       if (result.deletedCount > 0) {
         console.log(`[${this.getTimestamp()}] 🧹 Cleaned up ${result.deletedCount} operator assignments for machine ${machineSerial}`);
       }
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error cleaning up operator assignments for machine ${machineSerial}:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error cleaning up operator assignments for machine ${machineSerial}`, {
+        machine: machineSerial,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -862,7 +1103,8 @@ class MachineSimulator {
       });
 
       // Insert adapted session into database
-      const result = await sessionCollection.insertOne(adaptedSession);
+      const sessionDocForMongo = schemaAdapters.prepareDocForMongo(adaptedSession);
+      const result = await sessionCollection.insertOne(sessionDocForMongo);
       this.currentSessionId = result.insertedId;
       this.currentSessionStartTime = runningState.timestamp;
 
@@ -875,7 +1117,11 @@ class MachineSimulator {
       // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error starting machine session:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error starting machine session`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
       this.currentSessionId = null;
       this.currentSessionStartTime = null;
     }
@@ -930,7 +1176,7 @@ class MachineSimulator {
         };
 
         // Insert operator session (raw format, not adapted)
-        const res = await coll.insertOne(opDoc);
+        const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(opDoc));
         this.operatorSessionIdsByOperator.set(op.id, res.insertedId);
         this.operatorSessionIdsByStation.set(op.station, res.insertedId);
 
@@ -941,13 +1187,17 @@ class MachineSimulator {
         if (!this.cachedOperatorSessions.has(op.id)) {
           this.cachedOperatorSessions.set(op.id, []);
         }
-        this.cachedOperatorSessions.get(op.id).push(opDoc);
+        this.cachedOperatorSessions.get(op.id).push(schemaAdapters.prepareDocFromMongo(opDoc));
       }
       
       // ⭐ Cache update scheduled by startMachineSession, no need to call again
       
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error starting operator sessions:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error starting operator sessions`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -991,7 +1241,7 @@ class MachineSimulator {
           totalTimeCredit: 0
         };
         // Insert item session (raw format, not adapted)
-        const res = await coll.insertOne(doc);
+        const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(doc));
         this.itemSessionIdsByItem.set(it.id, res.insertedId);
         console.log(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
 
@@ -1000,13 +1250,17 @@ class MachineSimulator {
         if (!this.cachedItemSessions.has(it.id)) {
           this.cachedItemSessions.set(it.id, []);
         }
-        this.cachedItemSessions.get(it.id).push(doc);
+        this.cachedItemSessions.get(it.id).push(schemaAdapters.prepareDocFromMongo(doc));
       }
       
       // ⭐ Cache update scheduled by startMachineSession, no need to call again
       
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error starting item sessions:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error starting item sessions`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1018,9 +1272,10 @@ class MachineSimulator {
       const sessionCollection = db.collection(config.machineSessionCollectionName);
 
       // Get current session
-      const session = await sessionCollection.findOne({ _id: sessionId });
+      const sessionDoc = await sessionCollection.findOne({ _id: sessionId });
+      const session = sessionDoc ? schemaAdapters.prepareDocFromMongo(sessionDoc) : null;
       if (!session) {
-        console.warn(`[${this.getTimestamp()}] ⚠️ Session ${sessionId} not found for stats update`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ Session ${sessionId} not found for stats update`);
         return;
       }
 
@@ -1039,9 +1294,17 @@ class MachineSimulator {
 
       // Calculate work time (runtime * active stations)
       // Don't count dummy operators as "active stations" in machine-session stats
-      const activeStations = Array.isArray(session.operators)
+      let activeStations = Array.isArray(session.operators)
         ? session.operators.filter(op => op && op.id !== -1).length
         : 0;
+
+      // ✅ Fallback to program.stations or machine.lanes if operators array is empty/missing
+      if (!activeStations || !Number.isFinite(activeStations)) {
+        activeStations = Number.isFinite(session.program?.stations) && session.program.stations > 0
+          ? session.program.stations
+          : (Number.isFinite(session.machine?.lanes) && session.machine.lanes > 0 ? session.machine.lanes : 1);
+      }
+
       const workTime = runtime * activeStations;
 
       // Calculate total counts (adapted sessions have counts as object with valid/misfeed arrays)
@@ -1140,7 +1403,7 @@ class MachineSimulator {
       );
 
       // ⭐ Sync in-memory cache array with updated values (don't refetch from DB)
-      const sessionIndex = this.cachedMachineSessions.findIndex(s => s._id.equals(sessionId));
+      const sessionIndex = this.cachedMachineSessions.findIndex(s => idsEqual(s._id, sessionId));
       if (sessionIndex !== -1) {
         Object.assign(this.cachedMachineSessions[sessionIndex], updateData);
 
@@ -1173,7 +1436,12 @@ class MachineSimulator {
       }
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error updating session stats:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error updating session stats`, {
+        machine: this.machineConfig.name,
+        sessionId,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1181,7 +1449,8 @@ class MachineSimulator {
     try {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
-      const s = await coll.findOne({ _id: sessionId });
+      const doc = await coll.findOne({ _id: sessionId });
+      const s = doc ? schemaAdapters.prepareDocFromMongo(doc) : null;
       if (!s) return;
 
       // Handle timestamps that may be Date objects or ISO strings
@@ -1232,7 +1501,7 @@ class MachineSimulator {
         const opId = s.operator.id;
         if (this.cachedOperatorSessions.has(opId)) {
           const sessions = this.cachedOperatorSessions.get(opId);
-          const sessionIndex = sessions.findIndex(sess => sess._id.equals(sessionId));
+        const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
           }
@@ -1245,7 +1514,12 @@ class MachineSimulator {
       }
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error recalculating operator session stats:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error recalculating operator session stats`, {
+        machine: this.machineConfig.name,
+        sessionId,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1284,9 +1558,10 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
       
       // ⭐ Sync in-memory cache array with updated session from DB
-      const updatedSession = await sessionCollection.findOne({ _id: this.currentSessionId });
+      const updatedSessionDoc = await sessionCollection.findOne({ _id: this.currentSessionId });
+      const updatedSession = updatedSessionDoc ? schemaAdapters.prepareDocFromMongo(updatedSessionDoc) : null;
       if (updatedSession) {
-        const sessionIndex = this.cachedMachineSessions.findIndex(s => s._id.equals(this.currentSessionId));
+        const sessionIndex = this.cachedMachineSessions.findIndex(s => idsEqual(s._id, this.currentSessionId));
         if (sessionIndex !== -1) {
           this.cachedMachineSessions[sessionIndex] = updatedSession;
         }
@@ -1308,7 +1583,11 @@ class MachineSimulator {
       this.inSession = false; // Ensure flag is always consistent
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error ending machine session:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error ending machine session`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1332,12 +1611,13 @@ class MachineSimulator {
         await this.recalculateOperatorSession(opSessionId);
         
         // ⭐ Sync in-memory cache array with updated session from DB
-        const updatedSession = await coll.findOne({ _id: opSessionId });
+        const updatedSessionDoc = await coll.findOne({ _id: opSessionId });
+        const updatedSession = updatedSessionDoc ? schemaAdapters.prepareDocFromMongo(updatedSessionDoc) : null;
         if (updatedSession && updatedSession.operator?.id) {
           const opId = updatedSession.operator.id;
           if (this.cachedOperatorSessions.has(opId)) {
             const sessions = this.cachedOperatorSessions.get(opId);
-            const sessionIndex = sessions.findIndex(s => s._id.equals(opSessionId));
+            const sessionIndex = sessions.findIndex(s => idsEqual(s._id, opSessionId));
             if (sessionIndex !== -1) {
               sessions[sessionIndex] = updatedSession;
             }
@@ -1353,7 +1633,11 @@ class MachineSimulator {
       // ⭐ Cache update will be triggered by endMachineSession
 
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error ending operator sessions:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error ending operator sessions`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1388,7 +1672,11 @@ class MachineSimulator {
         })
       );
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error closing lingering operator sessions:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error closing lingering operator sessions`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1409,12 +1697,13 @@ class MachineSimulator {
         await this.recalculateItemSession(sessId);
         
         // ⭐ Sync in-memory cache array with updated session from DB
-        const updatedSession = await coll.findOne({ _id: sessId });
+        const updatedSessionDoc = await coll.findOne({ _id: sessId });
+        const updatedSession = updatedSessionDoc ? schemaAdapters.prepareDocFromMongo(updatedSessionDoc) : null;
         if (updatedSession && updatedSession.item?.id) {
           const itmId = updatedSession.item.id;
           if (this.cachedItemSessions.has(itmId)) {
             const sessions = this.cachedItemSessions.get(itmId);
-            const sessionIndex = sessions.findIndex(s => s._id.equals(sessId));
+            const sessionIndex = sessions.findIndex(s => idsEqual(s._id, sessId));
             if (sessionIndex !== -1) {
               sessions[sessionIndex] = updatedSession;
             }
@@ -1428,7 +1717,11 @@ class MachineSimulator {
       // ⭐ Cache recalculation is triggered by endMachineSession, so no need to call here
       
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error ending item sessions:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error ending item sessions`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1436,7 +1729,8 @@ class MachineSimulator {
     try {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.itemSessionCollectionName);
-      const s = await coll.findOne({ _id: sessionId });
+      const doc = await coll.findOne({ _id: sessionId });
+      const s = doc ? schemaAdapters.prepareDocFromMongo(doc) : null;
       if (!s) return;
 
       // Handle timestamps that may be Date objects or ISO strings
@@ -1479,7 +1773,7 @@ class MachineSimulator {
         const itmId = s.item.id;
         if (this.cachedItemSessions.has(itmId)) {
           const sessions = this.cachedItemSessions.get(itmId);
-          const sessionIndex = sessions.findIndex(sess => sess._id.equals(sessionId));
+          const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
           }
@@ -1491,7 +1785,12 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] 📊 Recalculated item session ${sessionId}: cnt=${totalCount}, tcredit=${totalTimeCredit}s`);
       }
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error recalculating item session:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error recalculating item session`, {
+        machine: this.machineConfig.name,
+        sessionId,
+        error: error.message,
+        stack: error.stack
+      });
     }
   }
 
@@ -1510,22 +1809,26 @@ class MachineSimulator {
             delete operatorRecord.status; // Remove status for schema compliance
 
             // Write to main operator collection
-            await db.collection(config.stateOperatorCollectionName).insertOne({ ...operatorRecord });
+            await db.collection(config.stateOperatorCollectionName).insertOne(schemaAdapters.prepareDocForMongo({ ...operatorRecord }));
 
             // Write to additional operator collections (each needs a fresh _id)
             delete operatorRecord._id;
-            await db.collection(config.stateOperatorDailyCollectionName).insertOne({ ...operatorRecord });
+            await db.collection(config.stateOperatorDailyCollectionName).insertOne(schemaAdapters.prepareDocForMongo({ ...operatorRecord }));
 
             delete operatorRecord._id;
-            await db.collection(config.stateOperatorWeeklyCollectionName).insertOne({ ...operatorRecord });
+            await db.collection(config.stateOperatorWeeklyCollectionName).insertOne(schemaAdapters.prepareDocForMongo({ ...operatorRecord }));
 
             delete operatorRecord._id;
-            await db.collection(config.stateOperatorMonthlyCollectionName).insertOne({ ...operatorRecord });
+            await db.collection(config.stateOperatorMonthlyCollectionName).insertOne(schemaAdapters.prepareDocForMongo({ ...operatorRecord }));
           }
         }
       }
     } catch (error) {
-      console.error(`[${this.getTimestamp()}] ❌ Error writing operator state records:`, error.message);
+      logError(`[${this.getTimestamp()}] ❌ Error writing operator state records`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
       // Don't throw - keep this separate from main state writes
     }
   }
@@ -1601,7 +1904,7 @@ class MachineSimulator {
         itemsArr = this.buildCurrentItemsArray(); // Full item details
       } catch (e) {
         // Fallback if items not ready
-        console.warn(`[${this.getTimestamp()}] ⚠️ Could not build items array: ${e.message}, using fallback`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ Could not build items array: ${e.message}, using fallback`);
         itemsArr = [{ id: 26, name: 'Fallback Item', standard: 1800 }];
       }
 
@@ -1667,23 +1970,23 @@ class MachineSimulator {
 
     // Write to main state-machine collection (exclude status for schema compliance)
     const { status: removedStatus1, ...adaptedRecordForMain } = adaptedRecord;
-    await db.collection(this.collectionName).insertOne(adaptedRecordForMain);
+    await db.collection(this.collectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecordForMain));
 
     // Write to additional state collections (exclude status and _id for schema compliance)
     const adaptedRecordCopy1 = JSON.parse(JSON.stringify(adaptedRecord));
     delete adaptedRecordCopy1._id;
     delete adaptedRecordCopy1.status;
-    await db.collection(config.stateMachineDailyCollectionName).insertOne(adaptedRecordCopy1);
+    await db.collection(config.stateMachineDailyCollectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecordCopy1));
 
     const adaptedRecordCopy2 = JSON.parse(JSON.stringify(adaptedRecord));
     delete adaptedRecordCopy2._id;
     delete adaptedRecordCopy2.status;
-    await db.collection(config.stateMachineWeeklyCollectionName).insertOne(adaptedRecordCopy2);
+    await db.collection(config.stateMachineWeeklyCollectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecordCopy2));
 
     const adaptedRecordCopy3 = JSON.parse(JSON.stringify(adaptedRecord));
     delete adaptedRecordCopy3._id;
     delete adaptedRecordCopy3.status;
-    await db.collection(config.stateMachineMonthlyCollectionName).insertOne(adaptedRecordCopy3);
+    await db.collection(config.stateMachineMonthlyCollectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecordCopy3));
 
     // Write operator-specific records to operator collections (using adapted record)
     await this.writeOperatorStateRecords(adaptedRecord);
@@ -1694,7 +1997,7 @@ class MachineSimulator {
     delete adaptedRecordForTicker._tickerDoc; // Remove _tickerDoc from what we write (it's metadata)
     await tickerCollection.updateOne(
       { "machine.id": adaptedRecord.machine.id },  // Query by machine.id (adapted format)
-      { $set: adaptedRecordForTicker },
+      { $set: schemaAdapters.prepareDocForMongo(adaptedRecordForTicker) },
       { upsert: true }
     );
 
@@ -1739,18 +2042,22 @@ class MachineSimulator {
       };
 
       // Insert fault session (raw format, not adapted)
-      const res = await coll.insertOne(doc);
+      const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(doc));
       this.currentFaultSessionId = res.insertedId;
       console.log(`[${this.getTimestamp()}] 🚨 Started fault session ${res.insertedId}`);
 
       // Push session to in-memory cache array
       doc._id = res.insertedId;
-      this.cachedFaultSessions.push(doc);
+      this.cachedFaultSessions.push(schemaAdapters.prepareDocFromMongo(doc));
       
       // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
       
     } catch (e) {
-      console.error(`[${this.getTimestamp()}] ❌ Error starting fault session:`, e.message);
+      logError(`[${this.getTimestamp()}] ❌ Error starting fault session`, {
+        machine: this.machineConfig.name,
+        error: e.message,
+        stack: e.stack
+      });
     }
   }
 
@@ -1770,18 +2077,23 @@ class MachineSimulator {
       console.log(`[${this.getTimestamp()}] ✅ Ended fault session ${this.currentFaultSessionId}`);
       
       // ⭐ Sync in-memory cache array with updated session from DB
-      const updatedSession = await coll.findOne({ _id: this.currentFaultSessionId });
+      const updatedSessionDoc = await coll.findOne({ _id: this.currentFaultSessionId });
+      const updatedSession = updatedSessionDoc ? schemaAdapters.prepareDocFromMongo(updatedSessionDoc) : null;
       if (updatedSession) {
-        const sessionIndex = this.cachedFaultSessions.findIndex(s => s._id.equals(this.currentFaultSessionId));
-        if (sessionIndex !== -1) {
-          this.cachedFaultSessions[sessionIndex] = updatedSession;
-        }
+      const sessionIndex = this.cachedFaultSessions.findIndex(s => idsEqual(s._id, this.currentFaultSessionId));
+      if (sessionIndex !== -1) {
+        this.cachedFaultSessions[sessionIndex] = updatedSession;
+      }
       }
       
       // ⭐ Cache will be updated by recurring interval (no manual trigger needed)
       
     } catch (e) {
-      console.error(`[${this.getTimestamp()}] ❌ Error ending fault session:`, e.message);
+      logError(`[${this.getTimestamp()}] ❌ Error ending fault session`, {
+        machine: this.machineConfig.name,
+        error: e.message,
+        stack: e.stack
+      });
     } finally {
       this.currentFaultSessionId = null;
     }
@@ -1791,7 +2103,8 @@ class MachineSimulator {
     try {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.faultSessionCollectionName);
-      const s = await coll.findOne({ _id: sessionId });
+      const doc = await coll.findOne({ _id: sessionId });
+      const s = doc ? schemaAdapters.prepareDocFromMongo(doc) : null;
       if (!s) return;
       // Handle timestamps that may be Date objects or ISO strings
       const start = s.timestamps.start instanceof Date
@@ -1817,7 +2130,7 @@ class MachineSimulator {
       );
       
       // ⭐ Sync in-memory cache array with updated values
-      const sessionIndex = this.cachedFaultSessions.findIndex(sess => sess._id.equals(sessionId));
+      const sessionIndex = this.cachedFaultSessions.findIndex(sess => idsEqual(sess._id, sessionId));
       if (sessionIndex !== -1) {
         Object.assign(this.cachedFaultSessions[sessionIndex], updateData);
       }
@@ -1827,7 +2140,11 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] 🧮 Recalc fault session ${sessionId}: faulttime=${Math.round(faulttime)}s missed=${Math.round(workTimeMissed)}s`);
       }
     } catch (e) {
-      console.error(`[${this.getTimestamp()}] ❌ Error recalculating fault session:`, e.message);
+      logError(`[${this.getTimestamp()}] ❌ Error recalculating fault session`, {
+        machine: this.machineConfig.name,
+        error: e.message,
+        stack: e.stack
+      });
     }
   }
 
@@ -1874,7 +2191,11 @@ class MachineSimulator {
         await this.endOperatorSessions(endState);
         // await this.endItemSessions(endState);
       } catch (error) {
-        console.error(`[${this.getTimestamp()}] ❌ Error ending session on stop:`, error.message);
+        logError(`[${this.getTimestamp()}] ❌ Error ending session on stop`, {
+          machine: this.machineConfig.name,
+          error: error.message,
+          stack: error.stack
+        });
       }
     }
 
@@ -1979,12 +2300,12 @@ class MachineSimulator {
         }
 
         // Write to main count collection (using adapted record)
-        await collection.insertOne(adaptedRecord);
+        await collection.insertOne(schemaAdapters.prepareDocForMongo(adaptedRecord));
 
         // Write to additional count collections (using adapted record)
-        await db.collection(config.countDailyCollectionName).insertOne(adaptedRecord);
-        await db.collection(config.countWeeklyCollectionName).insertOne(adaptedRecord);
-        await db.collection(config.countMonthlyCollectionName).insertOne(adaptedRecord);
+        await db.collection(config.countDailyCollectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecord));
+        await db.collection(config.countWeeklyCollectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecord));
+        await db.collection(config.countMonthlyCollectionName).insertOne(schemaAdapters.prepareDocForMongo(adaptedRecord));
 
         await db.collection(config.stateTickerCollectionName).updateOne(
           { "machine.id": adaptedRecord.machine.id },  // Using adapted record's machine.id
@@ -2000,13 +2321,13 @@ class MachineSimulator {
               // ⭐ PHASE 4: Schema-adapted sessions have counts as object with valid/misfeed arrays
               await sessionCollection.updateOne(
                 { _id: this.currentSessionId },
-                { $push: { 'counts.misfeed': adaptedRecord } }
+                { $push: { 'counts.misfeed': schemaAdapters.prepareDocForMongo(adaptedRecord) } }
               );
             } else {
               // ⭐ PHASE 4: Schema-adapted sessions have counts as object with valid/misfeed arrays
               await sessionCollection.updateOne(
                 { _id: this.currentSessionId },
-                { $push: { 'counts.valid': adaptedRecord } }
+                { $push: { 'counts.valid': schemaAdapters.prepareDocForMongo(adaptedRecord) } }
               );
             }
 
@@ -2014,7 +2335,12 @@ class MachineSimulator {
             await this.updateSessionStats();
 
           } catch (sessionError) {
-            console.error(`[${this.getTimestamp()}] ❌ Error updating session with count:`, sessionError.message);
+            logError(`[${this.getTimestamp()}] ❌ Error updating session with count`, {
+              machine: this.machineConfig.name,
+              sessionId: this.currentSessionId,
+              error: sessionError.message,
+              stack: sessionError.stack
+            });
           }
         }
 
@@ -2026,13 +2352,18 @@ class MachineSimulator {
           try {
             const opSess = db.collection(config.operatorSessionCollectionName);
             if (isMisfeed) {
-              await opSess.updateOne({ _id: opSessionId }, { $push: { misfeeds: adaptedRecord } });
+              await opSess.updateOne({ _id: opSessionId }, { $push: { misfeeds: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
             } else {
-              await opSess.updateOne({ _id: opSessionId }, { $push: { counts: adaptedRecord } });
+              await opSess.updateOne({ _id: opSessionId }, { $push: { counts: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
             }
             await this.recalculateOperatorSession(opSessionId);
           } catch (opSessionError) {
-            console.error(`[${this.getTimestamp()}] ❌ Error updating operator session with count:`, opSessionError.message);
+            logError(`[${this.getTimestamp()}] ❌ Error updating operator session with count`, {
+              machine: this.machineConfig.name,
+              sessionId: opSessionId,
+              error: opSessionError.message,
+              stack: opSessionError.stack
+            });
           }
         }
 
@@ -2044,13 +2375,18 @@ class MachineSimulator {
             try {
               const itemColl = db.collection(config.itemSessionCollectionName);
               if (isMisfeed) {
-                await itemColl.updateOne({ _id: itemSessId }, { $push: { misfeeds: adaptedRecord } });
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { misfeeds: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
               } else {
-                await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: adaptedRecord } });
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
               }
               await this.recalculateItemSession(itemSessId);
             } catch (itemSessionError) {
-              console.error(`[${this.getTimestamp()}] ❌ Error updating item session with ${isMisfeed ? 'misfeed' : 'count'}:`, itemSessionError.message);
+              logError(`[${this.getTimestamp()}] ❌ Error updating item session with ${isMisfeed ? 'misfeed' : 'count'}`, {
+                machine: this.machineConfig.name,
+                sessionId: itemSessId,
+                error: itemSessionError.message,
+                stack: itemSessionError.stack
+              });
             }
           }
         }
@@ -2059,7 +2395,12 @@ class MachineSimulator {
           this.simulateStationCounts(runningState, station, operator);
         }
       } catch (err) {
-        console.error(`❌ Count error at station ${station}:`, err.message);
+        logError(`❌ Count error at station ${station}`, {
+          machine: this.machineConfig.name,
+          station,
+          error: err.message,
+          stack: err.stack
+        });
       }
     }, delayMs);
 
@@ -2101,7 +2442,12 @@ if (require.main === module) {
     await simulator.start();
   }
 
-  startWorker().catch(console.error);
+startWorker().catch(err => {
+  logError('❌ Simulator worker failed to start', {
+    error: err.message,
+    stack: err.stack
+  });
+});
 }
 
 

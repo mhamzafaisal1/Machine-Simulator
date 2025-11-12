@@ -41,16 +41,30 @@ function getRuntimeSeconds(s) {
   return start ? Math.max(0, (end - start) / 1000) : 0;
 }
 
+function resolveActiveStations(s) {
+  if (Number.isFinite(s.activeStations) && s.activeStations > 0) return s.activeStations;
+  // primary: count real operators if present
+  if (Array.isArray(s.operators)) {
+    const n = s.operators.filter(op => op && op.id !== -1).length;
+    if (n > 0) return n;
+  }
+  // fallback: program.stations set by simulator (SPF should be 1; multi-lane machines >1)
+  if (Number.isFinite(s.program?.stations) && s.program.stations > 0) return s.program.stations;
+  // fallback: machine.lanes from machine config
+  if (Number.isFinite(s.machine?.lanes) && s.machine.lanes > 0) return s.machine.lanes;
+  // last resort
+  return 1;
+}
+
 function getWorkedSeconds(s) {
-  // Try computed metrics first
+  // prefer computed metrics
   if (Number.isFinite(s.metrics?.timers?.worked)) return s.metrics.timers.worked;
   if (Number.isFinite(s.workTime)) return s.workTime;
-  // Fall back to deriving: runtime * active stations
+
+  // derive from runtime * resolved stations
   const runtime = getRuntimeSeconds(s);
-  const activeStations = Number.isFinite(s.activeStations)
-    ? s.activeStations
-    : (Array.isArray(s.operators) ? s.operators.filter(op => op?.id !== -1).length : 0);
-  return runtime * activeStations;
+  const stations = resolveActiveStations(s);
+  return runtime * stations;
 }
 
 function normalizePPH(std) {
