@@ -437,7 +437,7 @@ class MachineSimulator {
       
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
-      const operatorSessionFilter = buildOverlapFilter('counts.machine.id', machineSerialValues, this.todayStart, now);
+      const operatorSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
       const operatorSessionsRaw = await operatorSessionColl.find(operatorSessionFilter)
         .sort({ 'timestamps.start': 1 })
         .toArray();
