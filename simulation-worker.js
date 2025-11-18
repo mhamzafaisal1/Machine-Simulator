@@ -1496,7 +1496,7 @@ class MachineSimulator {
         { $set: updateData }
       );
 
-      // ⭐ Sync in-memory cache array with updated values
+      // ⭐ Sync in-memory cache array with updated values AND counts/misfeeds
       if (s.operator?.id) {
         const opId = s.operator.id;
         if (this.cachedOperatorSessions.has(opId)) {
@@ -1504,6 +1504,9 @@ class MachineSimulator {
         const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
+            // Also sync counts and misfeeds arrays from the database session
+            sessions[sessionIndex].counts = s.counts || [];
+            sessions[sessionIndex].misfeeds = s.misfeeds || [];
           }
         }
       }
@@ -1768,7 +1771,7 @@ class MachineSimulator {
         { $set: updateData }
       );
 
-      // ⭐ Sync in-memory cache array with updated values
+      // ⭐ Sync in-memory cache array with updated values AND counts/misfeeds
       if (s.item?.id) {
         const itmId = s.item.id;
         if (this.cachedItemSessions.has(itmId)) {
@@ -1776,6 +1779,9 @@ class MachineSimulator {
           const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
+            // Also sync counts and misfeeds arrays from the database session
+            sessions[sessionIndex].counts = s.counts || [];
+            sessions[sessionIndex].misfeeds = s.misfeeds || [];
           }
         }
       }
@@ -2357,6 +2363,22 @@ class MachineSimulator {
               await opSess.updateOne({ _id: opSessionId }, { $push: { counts: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
             }
             await this.recalculateOperatorSession(opSessionId);
+
+            // ⭐ Sync in-memory cache with the new count/misfeed
+            if (operator && operator.id && this.cachedOperatorSessions.has(operator.id)) {
+              const sessions = this.cachedOperatorSessions.get(operator.id);
+              const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, opSessionId));
+              if (sessionIndex !== -1) {
+                // Add the count/misfeed to the in-memory session
+                if (isMisfeed) {
+                  if (!sessions[sessionIndex].misfeeds) sessions[sessionIndex].misfeeds = [];
+                  sessions[sessionIndex].misfeeds.push(adaptedRecord);
+                } else {
+                  if (!sessions[sessionIndex].counts) sessions[sessionIndex].counts = [];
+                  sessions[sessionIndex].counts.push(adaptedRecord);
+                }
+              }
+            }
           } catch (opSessionError) {
             logError(`[${this.getTimestamp()}] ❌ Error updating operator session with count`, {
               machine: this.machineConfig.name,
@@ -2380,6 +2402,22 @@ class MachineSimulator {
                 await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
               }
               await this.recalculateItemSession(itemSessId);
+
+              // ⭐ Sync in-memory cache with the new count/misfeed
+              if (this.cachedItemSessions.has(itemIdForRecord)) {
+                const sessions = this.cachedItemSessions.get(itemIdForRecord);
+                const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, itemSessId));
+                if (sessionIndex !== -1) {
+                  // Add the count/misfeed to the in-memory session
+                  if (isMisfeed) {
+                    if (!sessions[sessionIndex].misfeeds) sessions[sessionIndex].misfeeds = [];
+                    sessions[sessionIndex].misfeeds.push(adaptedRecord);
+                  } else {
+                    if (!sessions[sessionIndex].counts) sessions[sessionIndex].counts = [];
+                    sessions[sessionIndex].counts.push(adaptedRecord);
+                  }
+                }
+              }
             } catch (itemSessionError) {
               logError(`[${this.getTimestamp()}] ❌ Error updating item session with ${isMisfeed ? 'misfeed' : 'count'}`, {
                 machine: this.machineConfig.name,
