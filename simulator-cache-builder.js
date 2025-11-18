@@ -336,7 +336,7 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
 function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineName, itemSessions, queryStart, queryEnd }) {
   try {
     // Calculate totals using overlap logic
-    let workedTimeSec = 0, timeCreditSec = 0;
+    let runtimeSec = 0, workedTimeSec = 0, timeCreditSec = 0;
     let totalCounts = 0, totalMisfeeds = 0;
     let itemStandard = 0;
 
@@ -344,11 +344,13 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
       // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
+      const runtime = getRuntimeSeconds(s);
       const workTime = getWorkedSeconds(s);
       const totalTimeCredit = getTimeCreditSeconds(s);
       const totalCount = getCountsValid(s);
       const misfeedCount = getCountsMisfeed(s);
 
+      runtimeSec += safe(runtime) * factor;
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
       totalCounts += safe(totalCount) * factor;
@@ -362,7 +364,7 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
 
     // Calculate window and paused time
     const windowMs = queryEnd - queryStart;
-    const runtimeMs = Math.round(workedTimeSec * 1000);
+    const runtimeMs = Math.round(runtimeSec * 1000);
     const workedTimeMs = Math.round(workedTimeSec * 1000);
     const timeCreditMs = Math.round(timeCreditSec * 1000);
     const faultTimeMs = 0; // Items don't track separate faults
