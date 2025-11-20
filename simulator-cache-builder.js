@@ -350,7 +350,12 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
       const totalCount = getCountsValid(s);
       const misfeedCount = getCountsMisfeed(s);
 
-      runtimeSec += safe(runtime) * factor;
+      // ✅ Proportionally distribute runtime across concurrent items
+      // Get number of items in this session (SPF=4, non-SPF=1)
+      const itemsInSession = Array.isArray(s.items) ? s.items.length : 1;
+      const itemRuntimeProportion = itemsInSession > 0 ? 1 / itemsInSession : 1;
+
+      runtimeSec += safe(runtime) * factor * itemRuntimeProportion;
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
       totalCounts += safe(totalCount) * factor;
