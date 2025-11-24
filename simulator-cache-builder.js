@@ -42,17 +42,21 @@ function getRuntimeSeconds(s) {
 }
 
 function resolveActiveStations(s) {
+  // Primary: Use computed activeStations if already calculated
   if (Number.isFinite(s.activeStations) && s.activeStations > 0) return s.activeStations;
-  // primary: count real operators if present
+
+  // Secondary: Count real operators (this is the MOST RELIABLE method)
+  // This correctly handles SPF (1 operator) and multi-lane machines (N operators)
   if (Array.isArray(s.operators)) {
     const n = s.operators.filter(op => op && op.id !== -1).length;
     if (n > 0) return n;
   }
-  // fallback: program.stations set by simulator (SPF should be 1; multi-lane machines >1)
-  if (Number.isFinite(s.program?.stations) && s.program.stations > 0) return s.program.stations;
-  // fallback: machine.lanes from machine config
-  if (Number.isFinite(s.machine?.lanes) && s.machine.lanes > 0) return s.machine.lanes;
-  // last resort
+
+  // ⚠️ DO NOT USE program.stations or machine.lanes as fallback!
+  // Reason: SPF machines have machine.lanes=4 but activeStations=1
+  // Using these fields would cause 4x inflation of workTime
+
+  // Last resort: default to 1 station
   return 1;
 }
 
@@ -255,32 +259,37 @@ function buildMachineDailyTotal({ machineSerial, machineName, machineSessions, f
  */
 function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSerial, machineName, operatorSessions, queryStart, queryEnd }) {
   try {
-    // Calculate totals using overlap logic
+    // ✅ FIX: Track both runtime and workTime separately
+    let runtimeSec = 0;      // ← ADD: Track actual session runtime
     let workedTimeSec = 0, timeCreditSec = 0;
     let totalCounts = 0, totalMisfeeds = 0;
 
     for (const s of operatorSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
-      const workTime = getWorkedSeconds(s);
+      // ✅ Extract both runtime and workTime
+      const runtime = getRuntimeSeconds(s);     // ← ADD: Get session duration
+      const workTime = getWorkedSeconds(s);     // For operators, workTime = runtime (single operator)
       const totalTimeCredit = getTimeCreditSeconds(s);
       const totalCount = getCountsValid(s);
       const misfeedCount = getCountsMisfeed(s);
 
+      runtimeSec += safe(runtime) * factor;     // ← ADD: Accumulate runtime
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
       totalCounts += safe(totalCount) * factor;
       totalMisfeeds += safe(misfeedCount) * factor;
     }
 
-    // For operators, we don't track separate fault sessions
-    const windowMs = queryEnd - queryStart;
-    const runtimeMs = Math.round(workedTimeSec * 1000);
+    // For operators:
+    // - runtimeMs = total time operator was in sessions
+    // - workedTimeMs = runtime (for single operator, worked = runtime)
+    // - pausedTimeMs = time in session but not actively working (should be 0 or near 0)
+    const runtimeMs = Math.round(runtimeSec * 1000);      // ← FIX: Use actual runtime
     const workedTimeMs = Math.round(workedTimeSec * 1000);
     const timeCreditMs = Math.round(timeCreditSec * 1000);
     const faultTimeMs = 0; // Operators don't have separate fault tracking
-    const pausedTimeMs = Math.max(0, windowMs - runtimeMs);
+    const pausedTimeMs = Math.max(0, runtimeMs - workedTimeMs);  // ← FIX: Use runtime as base, not window
     
     // Create date string and ensure timezone consistency
     const dateStr = queryStart.toISOString().split('T')[0];
@@ -335,27 +344,30 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
  */
 function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineName, itemSessions, queryStart, queryEnd }) {
   try {
-    // Calculate totals using overlap logic
-    let runtimeSec = 0, workedTimeSec = 0, timeCreditSec = 0;
+    // ✅ FIX: Track runtime, workTime, and activeStations
+    let totalRuntimeSec = 0;  // ← ADD: Track actual session runtime
+    let workedTimeSec = 0, timeCreditSec = 0;
     let totalCounts = 0, totalMisfeeds = 0;
     let itemStandard = 0;
+    let maxActiveStations = 0;  // ← ADD: Track max active stations
 
     for (const s of itemSessions) {
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Use normalizers to handle both computed metrics and raw schema-adapted format
-      const runtime = getRuntimeSeconds(s);
+      // ✅ Extract runtime, workTime, and activeStations
+      const runtime = getRuntimeSeconds(s);    // ← ADD: Get session duration
       const workTime = getWorkedSeconds(s);
       const totalTimeCredit = getTimeCreditSeconds(s);
       const totalCount = getCountsValid(s);
       const misfeedCount = getCountsMisfeed(s);
 
-      // ✅ Proportionally distribute runtime across concurrent items
-      // Get number of items in this session (SPF=4, non-SPF=1)
-      const itemsInSession = Array.isArray(s.items) ? s.items.length : 1;
-      const itemRuntimeProportion = itemsInSession > 0 ? 1 / itemsInSession : 1;
+      // ← ADD: Track maximum active stations for this item
+      const sessionStations = resolveActiveStations(s);
+      if (sessionStations > maxActiveStations) {
+        maxActiveStations = sessionStations;
+      }
 
-      runtimeSec += safe(runtime) * factor * itemRuntimeProportion;
+      totalRuntimeSec += safe(runtime) * factor;  // ← ADD: Accumulate runtime
       workedTimeSec += safe(workTime) * factor;
       timeCreditSec += safe(totalTimeCredit) * factor;
       totalCounts += safe(totalCount) * factor;
@@ -367,13 +379,12 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
       }
     }
 
-    // Calculate window and paused time
-    const windowMs = queryEnd - queryStart;
-    const runtimeMs = Math.round(runtimeSec * 1000);
+    // ✅ FIX: Calculate times correctly
+    const runtimeMs = Math.round(totalRuntimeSec * 1000);  // ← FIX: Use actual runtime
     const workedTimeMs = Math.round(workedTimeSec * 1000);
     const timeCreditMs = Math.round(timeCreditSec * 1000);
     const faultTimeMs = 0; // Items don't track separate faults
-    const pausedTimeMs = Math.max(0, windowMs - runtimeMs);
+    const pausedTimeMs = Math.max(0, runtimeMs - workedTimeMs);  // ← FIX: Use runtime as base
     
     // Create date string and ensure timezone consistency
     const dateStr = queryStart.toISOString().split('T')[0];
@@ -389,22 +400,25 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
       machineName: machineName || `Serial ${machineSerial}`,
       date: dateStr,
       dateObj: dateObj,
-      
+
       // Time metrics (in milliseconds)
       runtimeMs: runtimeMs,
       faultTimeMs: faultTimeMs,
       workedTimeMs: workedTimeMs,
       pausedTimeMs: pausedTimeMs,
-      
+
+      // ← ADD: Active stations field
+      activeStations: maxActiveStations || 1,  // Default to 1 if no sessions
+
       // Count metrics
       totalFaults: 0,
       totalCounts: Math.round(totalCounts),
       totalMisfeeds: Math.round(totalMisfeeds),
       totalTimeCreditMs: timeCreditMs,
-      
+
       // Additional machine-item specific metrics
       itemStandard: itemStandard,
-      
+
       // Metadata
       lastUpdated: DateTime.now().setZone(SYSTEM_TIMEZONE).toJSDate(),
       timeRange: { start: queryStart, end: queryEnd },
@@ -515,15 +529,16 @@ function buildItemDailyTotal({ itemId, itemName, itemStandard, machineSerial, it
  */
 function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemName, machineSerial, machineName, operatorSessions, queryStart, queryEnd, source = 'simulator' }) {
   try {
-    // Calculate totals for this specific operator-item combination
-    let workedTimeSec = 0, timeCreditSec = 0;
+    // ✅ FIX: Don't track workedTime for operator-item combos (ambiguous for SPF)
+    // Only track time-credit (unambiguous metric) and counts
+    let timeCreditSec = 0;
     let totalCounts = 0, totalMisfeeds = 0;
     let itemStandard = 0;
 
     for (const s of operatorSessions) {
       // Find the index of this item in the session's items array
       const itemIndex = s.items?.findIndex(it => it.id === itemId);
-      
+
       if (itemIndex === -1 || itemIndex === undefined) {
         // This session doesn't involve this item, skip
         continue;
@@ -532,9 +547,7 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
       // Get the overlap factor for this session
       const { factor } = overlap(s.timestamps?.start, s.timestamps?.end, queryStart, queryEnd);
 
-      // ✅ Use normalizers and handle both computed and raw formats
-      // Get per-item metrics from the session
-      // totalCountByItem and timeCreditByItem are arrays aligned with s.items
+      // Get per-item metrics (aligned with s.items array)
       const countForItem = safe(s.totalCountByItem?.[itemIndex] || 0);
       const timeCreditForItem = safe(s.timeCreditByItem?.[itemIndex] || 0);
 
@@ -542,33 +555,21 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
       timeCreditSec += timeCreditForItem * factor;
 
       // Count misfeeds for this specific item
-      // Handle both old (flat array) and new (nested object) formats for misfeeds
       const misfeedsArray = s.counts?.misfeed || s.misfeeds || [];
       const misfeedsForItem = misfeedsArray.filter(m => m.item?.id === itemId).length;
       totalMisfeeds += misfeedsForItem * factor;
 
-      // Calculate worked time proportional to this item's contribution
-      // If operator worked on multiple items, distribute time based on counts
-      const totalCountInSession = getCountsValid(s);
-      if (totalCountInSession > 0) {
-        const itemProportion = countForItem / totalCountInSession;
-        const workTime = getWorkedSeconds(s);
-        workedTimeSec += safe(workTime) * factor * itemProportion;
-      }
-      
-      // Get item standard from session items
+      // Get item standard
       if (!itemStandard && s.items?.[itemIndex]?.standard) {
         itemStandard = s.items[itemIndex].standard;
       }
     }
 
     // Convert to milliseconds
-    const workedTimeMs = Math.round(workedTimeSec * 1000);
     const timeCreditMs = Math.round(timeCreditSec * 1000);
-    
-    // Create date string and ensure timezone consistency
+
+    // Create date string
     const dateStr = queryStart.toISOString().split('T')[0];
-    // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
     const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
 
     return {
@@ -582,11 +583,11 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
       machineName: machineName,
       date: dateStr,
       dateObj: dateObj,
-      
+
+      // ✅ FIX: Remove workedTimeMs (ambiguous), keep only time-credit (unambiguous)
       // Time metrics (in milliseconds)
-      workedTimeMs: workedTimeMs,
       totalTimeCreditMs: timeCreditMs,
-      
+
       // Count metrics (rounded)
       totalCounts: Math.round(totalCounts),
       totalMisfeeds: Math.round(totalMisfeeds),
@@ -610,8 +611,9 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
 
 /**
  * Upserts daily totals to cache collection
- * For 'item' entityType, uses atomic $inc operations to aggregate across machines
- * For other types, uses $set to replace
+ * ✅ FIX: Now uses $set for ALL entity types to prevent double-counting
+ * Reason: Cache updates run every 30 seconds, so $inc would accumulate incorrectly
+ * Instead, we recalculate totals from scratch each time
  * @param {Object} db - MongoDB database instance
  * @param {Array} dailyTotals - Array of daily total records to upsert
  * @param {String} collectionName - Collection name (default: 'totals-daily')
@@ -624,55 +626,21 @@ async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'total
     }
 
     const cacheCollection = db.collection(collectionName);
-    
+
     console.log(`[${new Date().toISOString()}] 🔄 Upserting ${dailyTotals.length} records to ${collectionName}...`);
-    
+
+    // ✅ FIX: Use $set for ALL entity types (no more $inc)
     // Prepare bulk operations for upsert
     const ops = dailyTotals.map(total => {
-      // For 'item' entityType, use atomic $inc operations to aggregate across machines
-      if (total.entityType === 'item') {
-        return {
-          updateOne: {
-            filter: { _id: total._id },
-            update: { 
-              $inc: {
-                runtimeMs: total.runtimeMs || 0,
-                workedTimeMs: total.workedTimeMs || 0,
-                totalTimeCreditMs: total.totalTimeCreditMs || 0,
-                totalCounts: total.totalCounts || 0,
-                totalMisfeeds: total.totalMisfeeds || 0
-              },
-              $set: {
-                entityType: total.entityType,
-                itemId: total.itemId,
-                itemName: total.itemName,
-                date: total.date,
-                dateObj: total.dateObj,
-                itemStandard: total.itemStandard,
-                source: total.source,
-                lastUpdated: total.lastUpdated,
-                timeRange: total.timeRange,
-                version: total.version
-              },
-              $addToSet: {
-                contributingMachines: total.contributingMachine
-              }
-            },
-            upsert: true
-          }
-        };
-      } else {
-        // For other entity types, use regular $set
-        return {
-          updateOne: {
-            filter: { _id: total._id },
-            update: { 
-              $set: total
-            },
-            upsert: true
-          }
-        };
-      }
+      return {
+        updateOne: {
+          filter: { _id: total._id },
+          update: {
+            $set: total  // ← SIMPLE: Just replace the entire document
+          },
+          upsert: true
+        }
+      };
     });
 
     // Execute bulk write
