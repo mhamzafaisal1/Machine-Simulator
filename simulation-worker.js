@@ -484,6 +484,24 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] 📊 Boot-time cache reconstruction: Found existing sessions, rebuilding totals-daily cache...`);
 
         try {
+          // ⭐ Recalculate all open operator and item sessions before cache reconstruction
+          // This ensures their computed fields have current values at boot time
+          for (const sessions of this.cachedOperatorSessions.values()) {
+            for (const session of sessions) {
+              if (!session.timestamps?.end) {  // Only open sessions
+                await this.recalculateOperatorSession(session._id);
+              }
+            }
+          }
+
+          for (const sessions of this.cachedItemSessions.values()) {
+            for (const session of sessions) {
+              if (!session.timestamps?.end) {  // Only open sessions
+                await this.recalculateItemSession(session._id);
+              }
+            }
+          }
+
           const result = await recalculateAndUpdateCache({
             db: db,
             machineSerial: machineSerial,
@@ -719,6 +737,24 @@ class MachineSimulator {
 
       const db = this.client.db(this.dbName);
       const now = new Date();
+
+      // ⭐ CRITICAL FIX: Recalculate all open operator and item sessions before cache update
+      // This ensures their computed fields (runtime, workTime, totalCount) have current values
+      for (const sessions of this.cachedOperatorSessions.values()) {
+        for (const session of sessions) {
+          if (!session.timestamps?.end) {  // Only open sessions
+            await this.recalculateOperatorSession(session._id);
+          }
+        }
+      }
+
+      for (const sessions of this.cachedItemSessions.values()) {
+        for (const session of sessions) {
+          if (!session.timestamps?.end) {  // Only open sessions
+            await this.recalculateItemSession(session._id);
+          }
+        }
+      }
 
       // Recalculate and update cache using in-memory session arrays
       const result = await recalculateAndUpdateCache({
