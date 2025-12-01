@@ -15,7 +15,8 @@ const {
 } = require('./utils');
 const config = require('./config');
 const {
-  recalculateAndUpdateCache
+  recalculateAndUpdateCache,
+  recalculateAndUpdateHourlyCache
 } = require('./simulator-cache-builder');
 const schemaValidator = require('./schema-validator');
 const schemaAdapters = require('./schema-adapters');
@@ -211,6 +212,9 @@ class MachineSimulator {
     this.cachedItemSessions = new Map();              // itemId -> session array for today
     this.todayStart = null;                           // Midnight today (for filtering)
     this.cacheUpdateInterval = null;                  // Recurring interval for cache updates
+
+    // ⭐ HOURLY ROLLOVER TRACKING
+    this.currentHourStart = null;                     // Start of current hour (for hourly totals)
   }
 
   // Helper method to check if machine is SPF
@@ -590,11 +594,24 @@ class MachineSimulator {
   scheduleMidnightRollover() {
     const SYSTEM_TIMEZONE = 'America/Chicago';
 
-    // Check every minute if we need to do midnight actions
+    // Initialize current hour start
+    this.currentHourStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('hour').toJSDate();
+    console.log(`[${this.getTimestamp()}] 🕐 Current hour starts at: ${this.currentHourStart.toISOString()}`);
+
+    // Check every minute if we need to do midnight or hourly actions
     setInterval(() => {
       const now = DateTime.now().setZone(SYSTEM_TIMEZONE);
       const hour = now.hour;
       const minute = now.minute;
+
+      // ⭐ Hourly rollover: Update currentHourStart at the start of each hour
+      if (minute === 1) {
+        const newHourStart = now.startOf('hour').toJSDate();
+        if (this.currentHourStart.getTime() !== newHourStart.getTime()) {
+          this.currentHourStart = newHourStart;
+          console.log(`[${this.getTimestamp()}] 🕐 Hour changed - new hour starts at: ${this.currentHourStart.toISOString()}`);
+        }
+      }
 
       // At 11:59pm, shutdown machines
       if (hour === 23 && minute === 59 && !this.midnightShutdownDone) {
@@ -617,7 +634,7 @@ class MachineSimulator {
       }
     }, 60000); // Check every 60 seconds
 
-    console.log(`[${this.getTimestamp()}] ⏰ Midnight rollover scheduler started`);
+    console.log(`[${this.getTimestamp()}] ⏰ Midnight and hourly rollover scheduler started`);
   }
 
   /**
@@ -813,6 +830,68 @@ class MachineSimulator {
   }
 
   /**
+   * ⭐ Recalculates and updates hourly cache totals using in-memory session data
+   */
+  async recalculateHourlyCacheTotals() {
+    try {
+      if (!this.currentHourStart) {
+        logWarn(`[${this.getTimestamp()}] ⚠️ currentHourStart not set, skipping hourly cache recalculation`);
+        return;
+      }
+
+      const db = this.client.db(this.dbName);
+      const now = new Date();
+
+      // Recalculate all open operator and item sessions before cache update
+      for (const sessions of this.cachedOperatorSessions.values()) {
+        for (const session of sessions) {
+          if (!session.timestamps?.end) {
+            await this.recalculateOperatorSession(session._id);
+          }
+        }
+      }
+
+      for (const sessions of this.cachedItemSessions.values()) {
+        for (const session of sessions) {
+          if (!session.timestamps?.end) {
+            await this.recalculateItemSession(session._id);
+          }
+        }
+      }
+
+      // Recalculate and update hourly cache using in-memory session arrays
+      const result = await recalculateAndUpdateHourlyCache({
+        db,
+        machineSerial: this.machineConfig.id || this.machineConfig.serial,
+        machineName: this.machineConfig.name,
+        machineSessions: this.cachedMachineSessions,
+        faultSessions: this.cachedFaultSessions,
+        operatorSessionsMap: this.cachedOperatorSessions,
+        itemSessionsMap: this.cachedItemSessions,
+        queryStart: this.currentHourStart,
+        queryEnd: now
+      });
+
+      if (result.success) {
+        console.log(`[${this.getTimestamp()}] 📊 Hourly cache updated: ${result.recordsUpdated} records`);
+      } else {
+        logError(`[${this.getTimestamp()}] ❌ Hourly cache update failed`, {
+          machine: this.machineConfig.name,
+          error: result.error
+        });
+      }
+
+    } catch (error) {
+      logError(`[${this.getTimestamp()}] ❌ Error recalculating hourly cache totals`, {
+        machine: this.machineConfig.name,
+        error: error.message,
+        stack: error.stack
+      });
+      // Don't throw - cache updates are non-critical
+    }
+  }
+
+  /**
    * ⭐ Starts the recurring cache update interval
    * Cache updates run automatically every N seconds based on config
    */
@@ -823,12 +902,13 @@ class MachineSimulator {
     }
 
     const intervalMs = (config.cacheUpdateIntervalSeconds || 30) * 1000;
-    
+
     console.log(`[${this.getTimestamp()}] ⏰ Starting cache update interval (every ${config.cacheUpdateIntervalSeconds || 30} seconds)`);
-    
+
     // Set recurring interval
     this.cacheUpdateInterval = setInterval(async () => {
       await this.recalculateDailyCacheTotals();
+      await this.recalculateHourlyCacheTotals();
     }, intervalMs);
   }
 
