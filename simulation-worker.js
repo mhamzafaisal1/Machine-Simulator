@@ -455,6 +455,22 @@ class MachineSimulator {
 
       // Group by operator ID
       for (const session of operatorSessions) {
+        // ⭐ FILTER: Skip incompatible old sessions (schema-adapted format with no data)
+        // These sessions have:
+        // - counts as object {valid: [], misfeed: []} instead of array
+        // - item (singular) instead of items (plural)
+        // - NO computed fields (totalCount, runtime)
+        const countsIsObject = session.counts && typeof session.counts === 'object' && !Array.isArray(session.counts);
+        const hasEmptyCounts = countsIsObject &&
+                              Array.isArray(session.counts?.valid) &&
+                              session.counts.valid.length === 0;
+        const lacksComputedFields = !session.totalCount && !session.runtime;
+
+        if (countsIsObject && hasEmptyCounts && lacksComputedFields) {
+          skippedIncompatible++;
+          continue; // Skip this session
+        }
+
         const operatorId = session.operator?.id;
         if (operatorId && operatorId !== -1) {
           if (!this.cachedOperatorSessions.has(operatorId)) {
@@ -494,23 +510,30 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] 📊 Boot-time cache reconstruction: Found existing sessions, rebuilding totals-daily cache...`);
 
         try {
-          // ⭐ Recalculate all open operator and item sessions before cache reconstruction
-          // This ensures their computed fields have current values at boot time
+          // ⭐ CRITICAL FIX: Recalculate ALL operator and item sessions before cache reconstruction
+          // This ensures their computed fields (totalCount, runtime) are populated at boot time
+          // Previously only recalculated open sessions, but closed sessions from earlier today
+          // also need recalculation if they were loaded in schema-adapted format
+          console.log(`[${this.getTimestamp()}] 🔄 Recalculating all operator sessions at boot...`);
+          let recalcCount = 0;
           for (const sessions of this.cachedOperatorSessions.values()) {
             for (const session of sessions) {
-              if (!session.timestamps?.end) {  // Only open sessions
-                await this.recalculateOperatorSession(session._id);
-              }
+              await this.recalculateOperatorSession(session._id);
+              recalcCount++;
             }
           }
+          console.log(`[${this.getTimestamp()}] ✅ Recalculated ${recalcCount} operator sessions`);
 
+          console.log(`[${this.getTimestamp()}] 🔄 Recalculating all item sessions at boot...`);
+          recalcCount = 0;
           for (const sessions of this.cachedItemSessions.values()) {
             for (const session of sessions) {
-              if (!session.timestamps?.end) {  // Only open sessions
-                await this.recalculateItemSession(session._id);
-              }
+              await this.recalculateItemSession(session._id);
+              recalcCount++;
             }
           }
+          console.log(`[${this.getTimestamp()}] ✅ Recalculated ${recalcCount} item sessions`);
+
 
           const result = await recalculateAndUpdateCache({
             db: db,
@@ -1574,6 +1597,20 @@ class MachineSimulator {
       const s = doc ? schemaAdapters.prepareDocFromMongo(doc) : null;
       if (!s) return;
 
+      // ⭐ SKIP sessions in incompatible format (old schema-adapted sessions with no data)
+      // These sessions have:
+      // - counts as object {valid: [], misfeed: []} instead of array
+      // - Empty counts.valid array (no usable data)
+      // We can't recalculate these because the data structure is incompatible
+      const countsIsObject = s.counts && typeof s.counts === 'object' && !Array.isArray(s.counts);
+      const hasEmptyCounts = countsIsObject &&
+                            Array.isArray(s.counts?.valid) &&
+                            s.counts.valid.length === 0;
+
+      if (countsIsObject && hasEmptyCounts) {
+        return; // Skip this session, it has no useful data
+      }
+
       // Handle timestamps that may be Date objects or ISO strings
       const start = s.timestamps.start instanceof Date
         ? DateTime.fromJSDate(s.timestamps.start)
@@ -1622,12 +1659,13 @@ class MachineSimulator {
         const opId = s.operator.id;
         if (this.cachedOperatorSessions.has(opId)) {
           const sessions = this.cachedOperatorSessions.get(opId);
-        const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
+          const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
             // Also sync counts and misfeeds arrays from the database session
             sessions[sessionIndex].counts = s.counts || [];
             sessions[sessionIndex].misfeeds = s.misfeeds || [];
+
           }
         }
       }
