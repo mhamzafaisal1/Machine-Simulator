@@ -403,7 +403,7 @@ class MachineSimulator {
   async loadTodaysSessions(startInterval = true) {
     try {
       console.log(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
-      
+
       const db = this.client.db(this.dbName);
       const machineSerial = this.machineConfig.id || this.machineConfig.serial;
       const machineSerialValues = buildSerialQueryValues(machineSerial);
@@ -411,13 +411,19 @@ class MachineSimulator {
         logWarn(`[${this.getTimestamp()}] ⚠️ Machine serial not available; skipping boot cache hydration`);
         return;
       }
-      
+
       // Calculate today's start (midnight in America/Chicago timezone)
       const SYSTEM_TIMEZONE = 'America/Chicago';
       this.todayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
       const now = new Date();
-      
+
       console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
+
+      // ✅ FIX: Clear all cache arrays/maps BEFORE reloading to prevent stale data
+      this.cachedMachineSessions = [];
+      this.cachedFaultSessions = [];
+      this.cachedOperatorSessions.clear();
+      this.cachedItemSessions.clear();
 
       // 1. Load machine sessions for this machine today
       const machineSessionColl = db.collection(config.machineSessionCollectionName);
@@ -428,7 +434,7 @@ class MachineSimulator {
       this.cachedMachineSessions = machineSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
 
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
-      
+
       // 2. Load fault sessions for this machine today
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
       const faultSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
@@ -436,9 +442,9 @@ class MachineSimulator {
         .sort({ 'timestamps.start': 1 })
         .toArray();
       this.cachedFaultSessions = faultSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
-      
+
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedFaultSessions.length} fault sessions`);
-      
+
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
       const operatorSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
@@ -446,7 +452,7 @@ class MachineSimulator {
         .sort({ 'timestamps.start': 1 })
         .toArray();
       const operatorSessions = operatorSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
-      
+
       // Group by operator ID
       for (const session of operatorSessions) {
         const operatorId = session.operator?.id;
@@ -457,9 +463,9 @@ class MachineSimulator {
           this.cachedOperatorSessions.get(operatorId).push(session);
         }
       }
-      
+
       console.log(`[${this.getTimestamp()}] ✅ Loaded ${operatorSessions.length} operator sessions for ${this.cachedOperatorSessions.size} operators`);
-      
+
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
       const itemSessionFilter = buildOverlapFilter('machine.id', machineSerialValues, this.todayStart, now);
@@ -467,7 +473,7 @@ class MachineSimulator {
         .sort({ 'timestamps.start': 1 })
         .toArray();
       const itemSessions = itemSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
-      
+
       // Group by item ID
       for (const session of itemSessions) {
         const itemId = session.item?.id;
@@ -693,13 +699,12 @@ class MachineSimulator {
       // Update todayStart to new day
       this.todayStart = newDayStart;
 
-      // Clear old cache arrays
-      this.cachedMachineSessions = [];
-      this.cachedFaultSessions = [];
-      this.cachedOperatorSessions.clear();
-      this.cachedItemSessions.clear();
+      // ✅ FIX: Don't clear cache arrays before reloading - loadTodaysSessions will handle it properly
+      // The issue was: clearing arrays removed the session data that was accumulated before midnight
+      // Then new sessions started with zeros, causing zero metrics in cache
+      // Solution: Let loadTodaysSessions() clear and repopulate with ALL sessions from midnight onwards
 
-      // Reload sessions for new day
+      // Reload sessions for new day (this will clear and repopulate the arrays with correct data)
       await this.loadTodaysSessions(false);
 
       // Restart machines if they were running before midnight
