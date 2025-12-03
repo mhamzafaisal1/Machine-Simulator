@@ -419,7 +419,7 @@ class MachineSimulator {
 
       console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
 
-      // ✅ FIX: Clear all cache arrays/maps BEFORE reloading to prevent stale data
+      // Clear all cache arrays/maps BEFORE reloading
       this.cachedMachineSessions = [];
       this.cachedFaultSessions = [];
       this.cachedOperatorSessions.clear();
@@ -510,19 +510,14 @@ class MachineSimulator {
         console.log(`[${this.getTimestamp()}] 📊 Boot-time cache reconstruction: Found existing sessions, rebuilding totals-daily cache...`);
 
         try {
-          // ⭐ CRITICAL FIX: Recalculate ALL operator and item sessions before cache reconstruction
-          // This ensures their computed fields (totalCount, runtime) are populated at boot time
-          // Previously only recalculated open sessions, but closed sessions from earlier today
-          // also need recalculation if they were loaded in schema-adapted format
-          console.log(`[${this.getTimestamp()}] 🔄 Recalculating all operator sessions at boot...`);
-          let recalcCount = 0;
+          // ⭐ Recalculate ALL operator sessions before cache reconstruction
+          // This ensures their computed fields have current values at boot time
+          // Fixed: Recalculate all sessions (not just open ones) to ensure operators stay in sync with machines
           for (const sessions of this.cachedOperatorSessions.values()) {
             for (const session of sessions) {
               await this.recalculateOperatorSession(session._id);
-              recalcCount++;
             }
           }
-          console.log(`[${this.getTimestamp()}] ✅ Recalculated ${recalcCount} operator sessions`);
 
           console.log(`[${this.getTimestamp()}] 🔄 Recalculating all item sessions at boot...`);
           recalcCount = 0;
@@ -728,7 +723,8 @@ class MachineSimulator {
       // Solution: Let loadTodaysSessions() clear and repopulate with ALL sessions from midnight onwards
 
       // Reload sessions for new day (this will clear and repopulate the arrays with correct data)
-      await this.loadTodaysSessions(false);
+      // ✅ FIX: Pass true to restart the cache update interval after midnight rollover
+      await this.loadTodaysSessions(true);
 
       // Restart machines if they were running before midnight
       if (this.wasRunningBeforeMidnight) {
@@ -783,13 +779,12 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const now = new Date();
 
-      // ⭐ CRITICAL FIX: Recalculate all open operator and item sessions before cache update
+      // ⭐ CRITICAL FIX: Recalculate ALL operator sessions before cache update
       // This ensures their computed fields (runtime, workTime, totalCount) have current values
+      // Fixed: Recalculate all sessions (not just open ones) to ensure operators stay in sync with machines
       for (const sessions of this.cachedOperatorSessions.values()) {
         for (const session of sessions) {
-          if (!session.timestamps?.end) {  // Only open sessions
-            await this.recalculateOperatorSession(session._id);
-          }
+          await this.recalculateOperatorSession(session._id);
         }
       }
 
@@ -846,12 +841,10 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const now = new Date();
 
-      // Recalculate all open operator and item sessions before cache update
+      // Recalculate ALL operator sessions before cache update (not just open ones)
       for (const sessions of this.cachedOperatorSessions.values()) {
         for (const session of sessions) {
-          if (!session.timestamps?.end) {
-            await this.recalculateOperatorSession(session._id);
-          }
+          await this.recalculateOperatorSession(session._id);
         }
       }
 
@@ -1660,12 +1653,26 @@ class MachineSimulator {
         if (this.cachedOperatorSessions.has(opId)) {
           const sessions = this.cachedOperatorSessions.get(opId);
           const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
+          const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
             // Also sync counts and misfeeds arrays from the database session
             sessions[sessionIndex].counts = s.counts || [];
             sessions[sessionIndex].misfeeds = s.misfeeds || [];
-
+          } else {
+            // ⚠️ WARNING: Session not found in cache - this indicates a sync issue
+            // FIX: Add the session to the cache to keep them in sync
+            logWarn(`[${this.getTimestamp()}] ⚠️ Operator session ${sessionId} not found in cache for operator ${opId} - adding it now`, {
+              machine: this.machineConfig.name,
+              sessionId: normalizeId(sessionId),
+              operatorId: opId,
+              cachedSessionIds: sessions.map(sess => normalizeId(sess._id))
+            });
+            // Add the session to the cache with current values
+            const sessionWithUpdates = Object.assign({}, s, updateData);
+            sessionWithUpdates.counts = s.counts || [];
+            sessionWithUpdates.misfeeds = s.misfeeds || [];
+            sessions.push(sessionWithUpdates);
           }
         }
       }
