@@ -830,11 +830,12 @@ class MachineSimulator {
 
   /**
    * ⭐ Recalculates and updates hourly cache totals using in-memory session data
+   * ✅ FIX: Now builds totals for ALL hours from todayStart to now (not just current hour)
    */
   async recalculateHourlyCacheTotals() {
     try {
-      if (!this.currentHourStart) {
-        logWarn(`[${this.getTimestamp()}] ⚠️ currentHourStart not set, skipping hourly cache recalculation`);
+      if (!this.todayStart) {
+        logWarn(`[${this.getTimestamp()}] ⚠️ todayStart not set, skipping hourly cache recalculation`);
         return;
       }
 
@@ -856,6 +857,7 @@ class MachineSimulator {
         }
       }
 
+      // ✅ FIX: Pass todayStart instead of currentHourStart to build ALL hourly totals
       // Recalculate and update hourly cache using in-memory session arrays
       const result = await recalculateAndUpdateHourlyCache({
         db,
@@ -865,12 +867,12 @@ class MachineSimulator {
         faultSessions: this.cachedFaultSessions,
         operatorSessionsMap: this.cachedOperatorSessions,
         itemSessionsMap: this.cachedItemSessions,
-        queryStart: this.currentHourStart,
+        todayStart: this.todayStart,
         queryEnd: now
       });
 
       if (result.success) {
-        console.log(`[${this.getTimestamp()}] 📊 Hourly cache updated: ${result.recordsUpdated} records`);
+        console.log(`[${this.getTimestamp()}] 📊 Hourly cache updated: ${result.recordsUpdated} records across ${result.hoursProcessed} hours`);
       } else {
         logError(`[${this.getTimestamp()}] ❌ Hourly cache update failed`, {
           machine: this.machineConfig.name,
