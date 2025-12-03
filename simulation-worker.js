@@ -1655,7 +1655,6 @@ class MachineSimulator {
         if (this.cachedOperatorSessions.has(opId)) {
           const sessions = this.cachedOperatorSessions.get(opId);
           const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
-          const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
             // Also sync counts and misfeeds arrays from the database session

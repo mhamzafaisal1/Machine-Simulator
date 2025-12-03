@@ -580,8 +580,10 @@ function buildItemHourlyTotal({ itemId, itemName, itemStandard, machineSerial, i
     const dateHourStr = `${dateStr}-${hour.toString().padStart(2, '0')}`;
     const dateObj = DateTime.fromISO(`${dateStr}T${hour.toString().padStart(2, '0')}:00:00`, { zone: SYSTEM_TIMEZONE }).toUTC().toJSDate();
 
+    // ✅ FIX: Include machineSerial in _id to prevent overwrites across machines
+    // Each machine creates its own record, then we aggregate in the query
     return {
-      _id: `item-${itemId}-${dateHourStr}`,
+      _id: `item-${itemId}-${machineSerial}-${dateHourStr}`,
       entityType: 'item',
       itemId, itemName: itemName || `Item ${itemId}`,
       date: dateStr, dateHourStr, hour, dateObj,
