@@ -580,8 +580,10 @@ function buildItemHourlyTotal({ itemId, itemName, itemStandard, machineSerial, i
     const dateHourStr = `${dateStr}-${hour.toString().padStart(2, '0')}`;
     const dateObj = DateTime.fromISO(`${dateStr}T${hour.toString().padStart(2, '0')}:00:00`, { zone: SYSTEM_TIMEZONE }).toUTC().toJSDate();
 
+    // ✅ FIX: Include machineSerial in _id to prevent overwrites across machines
+    // Each machine creates its own record, then we aggregate in the query
     return {
-      _id: `item-${itemId}-${dateHourStr}`,
+      _id: `item-${itemId}-${machineSerial}-${dateHourStr}`,
       entityType: 'item',
       itemId, itemName: itemName || `Item ${itemId}`,
       date: dateStr, dateHourStr, hour, dateObj,
@@ -1191,6 +1193,8 @@ async function upsertHourlyTotalsToCache(db, hourlyTotals, collectionName = 'hou
 
 /**
  * Recalculates and updates all hourly cache totals for a machine using in-memory session data
+ * ✅ FIX: Now builds totals for ALL hours from todayStart to now (not just current hour)
+ * This ensures all hourly totals are calculated, not just the current hour
  */
 async function recalculateAndUpdateHourlyCache({
   db,
@@ -1200,132 +1204,155 @@ async function recalculateAndUpdateHourlyCache({
   faultSessions,
   operatorSessionsMap,
   itemSessionsMap,
-  queryStart,
+  todayStart,
   queryEnd
 }) {
   try {
-    console.log(`[${new Date().toISOString()}] 🔧 Recalculating hourly cache for machine ${machineSerial}`);
+    console.log(`[${new Date().toISOString()}] 🔧 Recalculating hourly cache for machine ${machineSerial} from ${todayStart.toISOString()} to ${queryEnd.toISOString()}`);
 
     const hourlyTotals = [];
 
-    // 1. Build machine hourly total
-    const machineHourlyTotal = buildMachineHourlyTotal({
-      machineSerial,
-      machineName,
-      machineSessions,
-      faultSessions,
-      queryStart,
-      queryEnd
-    });
+    // ✅ FIX: Loop through ALL hours from todayStart to now
+    // This ensures we build hourly totals for every hour that has occurred today
+    let hourStart = DateTime.fromJSDate(todayStart, { zone: SYSTEM_TIMEZONE }).startOf('hour');
+    const endTime = DateTime.fromJSDate(queryEnd, { zone: SYSTEM_TIMEZONE });
 
-    if (machineHourlyTotal) {
-      hourlyTotals.push(machineHourlyTotal);
-    }
+    // Safety check: prevent infinite loops (max 24 hours per day)
+    const maxHours = 24;
+    let hourCount = 0;
 
-    // 2. Build operator-machine hourly totals
-    for (const [operatorId, sessions] of operatorSessionsMap.entries()) {
-      if (sessions.length === 0) continue;
+    // Build totals for each hour from todayStart to now
+    while (hourStart <= endTime && hourCount < maxHours) {
+      const hourStartDate = hourStart.toJSDate();
+      // For each hour, queryEnd is either the end of that hour or the current time (if it's the current hour)
+      const hourEndDate = hourStart.plus({ hours: 1 }).toJSDate();
+      const hourQueryEnd = hourEndDate > queryEnd ? queryEnd : hourEndDate;
 
-      const operatorName = sessions[0]?.operator?.name || `Operator ${operatorId}`;
-
-      const operatorHourlyTotal = buildOperatorMachineHourlyTotal({
-        operatorId,
-        operatorName,
+      // 1. Build machine hourly total for this hour
+      const machineHourlyTotal = buildMachineHourlyTotal({
         machineSerial,
         machineName,
-        operatorSessions: sessions,
-        queryStart,
-        queryEnd
+        machineSessions,
+        faultSessions,
+        queryStart: hourStartDate,
+        queryEnd: hourQueryEnd
       });
 
-      if (operatorHourlyTotal) {
-        hourlyTotals.push(operatorHourlyTotal);
+      if (machineHourlyTotal) {
+        hourlyTotals.push(machineHourlyTotal);
       }
-    }
 
-    // 3. Build item-machine hourly totals
-    for (const [itemId, sessions] of itemSessionsMap.entries()) {
-      if (sessions.length === 0) continue;
+      // 2. Build operator-machine hourly totals for this hour
+      for (const [operatorId, sessions] of operatorSessionsMap.entries()) {
+        if (sessions.length === 0) continue;
 
-      const itemName = sessions[0]?.item?.name || `Item ${itemId}`;
+        const operatorName = sessions[0]?.operator?.name || `Operator ${operatorId}`;
 
-      const itemHourlyTotal = buildItemMachineHourlyTotal({
-        itemId,
-        itemName,
-        machineSerial,
-        machineName,
-        itemSessions: sessions,
-        queryStart,
-        queryEnd
-      });
+        const operatorHourlyTotal = buildOperatorMachineHourlyTotal({
+          operatorId,
+          operatorName,
+          machineSerial,
+          machineName,
+          operatorSessions: sessions,
+          queryStart: hourStartDate,
+          queryEnd: hourQueryEnd
+        });
 
-      if (itemHourlyTotal) {
-        hourlyTotals.push(itemHourlyTotal);
-      }
-    }
-
-    // 4. Build plant-wide item hourly totals
-    for (const [itemId, sessions] of itemSessionsMap.entries()) {
-      if (sessions.length === 0) continue;
-
-      const itemName = sessions[0]?.item?.name || `Item ${itemId}`;
-      const itemStandard = sessions[0]?.item?.standard || 0;
-
-      const itemTotal = buildItemHourlyTotal({
-        itemId,
-        itemName,
-        itemStandard,
-        machineSerial,
-        itemSessions: sessions,
-        queryStart,
-        queryEnd,
-        source: 'simulator'
-      });
-
-      if (itemTotal) {
-        hourlyTotals.push(itemTotal);
-      }
-    }
-
-    // 5. Build operator-item hourly totals
-    let operatorItemCount = 0;
-    for (const [operatorId, sessions] of operatorSessionsMap.entries()) {
-      if (sessions.length === 0) continue;
-
-      const operatorName = sessions[0]?.operator?.name || `Operator ${operatorId}`;
-
-      const uniqueItems = new Map();
-      for (const session of sessions) {
-        if (!session.items || session.items.length === 0) continue;
-        for (const item of session.items) {
-          if (!uniqueItems.has(item.id)) {
-            uniqueItems.set(item.id, item.name || `Item ${item.id}`);
-          }
+        if (operatorHourlyTotal) {
+          hourlyTotals.push(operatorHourlyTotal);
         }
       }
 
-      for (const [itemId, itemName] of uniqueItems.entries()) {
-        const operatorItemTotal = buildOperatorItemHourlyTotal({
-          operatorId,
-          operatorName,
+      // 3. Build item-machine hourly totals for this hour
+      for (const [itemId, sessions] of itemSessionsMap.entries()) {
+        if (sessions.length === 0) continue;
+
+        const itemName = sessions[0]?.item?.name || `Item ${itemId}`;
+
+        const itemHourlyTotal = buildItemMachineHourlyTotal({
           itemId,
           itemName,
           machineSerial,
           machineName,
-          operatorSessions: sessions,
-          queryStart,
-          queryEnd,
+          itemSessions: sessions,
+          queryStart: hourStartDate,
+          queryEnd: hourQueryEnd
+        });
+
+        if (itemHourlyTotal) {
+          hourlyTotals.push(itemHourlyTotal);
+        }
+      }
+
+      // 4. Build plant-wide item hourly totals for this hour
+      for (const [itemId, sessions] of itemSessionsMap.entries()) {
+        if (sessions.length === 0) continue;
+
+        const itemName = sessions[0]?.item?.name || `Item ${itemId}`;
+        const itemStandard = sessions[0]?.item?.standard || 0;
+
+        const itemTotal = buildItemHourlyTotal({
+          itemId,
+          itemName,
+          itemStandard,
+          machineSerial,
+          itemSessions: sessions,
+          queryStart: hourStartDate,
+          queryEnd: hourQueryEnd,
           source: 'simulator'
         });
 
-        if (operatorItemTotal) {
-          hourlyTotals.push(operatorItemTotal);
-          operatorItemCount++;
+        if (itemTotal) {
+          hourlyTotals.push(itemTotal);
         }
       }
+
+      // 5. Build operator-item hourly totals for this hour
+      for (const [operatorId, sessions] of operatorSessionsMap.entries()) {
+        if (sessions.length === 0) continue;
+
+        const operatorName = sessions[0]?.operator?.name || `Operator ${operatorId}`;
+
+        const uniqueItems = new Map();
+        for (const session of sessions) {
+          if (!session.items || session.items.length === 0) continue;
+          for (const item of session.items) {
+            if (!uniqueItems.has(item.id)) {
+              uniqueItems.set(item.id, item.name || `Item ${item.id}`);
+            }
+          }
+        }
+
+        for (const [itemId, itemName] of uniqueItems.entries()) {
+          const operatorItemTotal = buildOperatorItemHourlyTotal({
+            operatorId,
+            operatorName,
+            itemId,
+            itemName,
+            machineSerial,
+            machineName,
+            operatorSessions: sessions,
+            queryStart: hourStartDate,
+            queryEnd: hourQueryEnd,
+            source: 'simulator'
+          });
+
+          if (operatorItemTotal) {
+            hourlyTotals.push(operatorItemTotal);
+          }
+        }
+      }
+
+      // Move to next hour
+      hourStart = hourStart.plus({ hours: 1 });
+      hourCount++;
     }
 
-    console.log(`[${new Date().toISOString()}] 📊 Built ${operatorItemCount} operator-item hourly totals`);
+    if (hourCount >= maxHours) {
+      console.warn(`[${new Date().toISOString()}] ⚠️ Hourly cache loop hit max hours limit (${maxHours}), may have incomplete totals`);
+    }
+
+    console.log(`[${new Date().toISOString()}] 📊 Built ${hourlyTotals.length} hourly total records across ${Math.ceil((queryEnd - todayStart) / (1000 * 60 * 60))} hours`);
 
     // 6. Upsert all hourly totals to cache in one batch
     const result = await upsertHourlyTotalsToCache(db, hourlyTotals);
@@ -1333,11 +1360,8 @@ async function recalculateAndUpdateHourlyCache({
     return {
       success: true,
       recordsUpdated: result.upsertedCount + result.modifiedCount,
-      machineTotals: 1,
-      operatorTotals: operatorSessionsMap.size,
-      machineItemTotals: itemSessionsMap.size,
-      itemTotals: itemSessionsMap.size,
-      operatorItemTotals: operatorItemCount
+      hoursProcessed: Math.ceil((queryEnd - todayStart) / (1000 * 60 * 60)),
+      totalRecords: hourlyTotals.length
     };
   } catch (error) {
     console.error('Error recalculating and updating hourly cache:', error);
