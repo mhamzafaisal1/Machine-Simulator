@@ -993,20 +993,20 @@ async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'total
  * @param {Date} options.queryStart - Start of day (midnight)
  * @param {Date} options.queryEnd - Current time
  */
-async function recalculateAndUpdateCache({ 
-  db, 
-  machineSerial, 
+async function recalculateAndUpdateCache({
+  db,
+  machineSerial,
   machineName,
-  machineSessions, 
+  machineSessions,
   faultSessions,
-  operatorSessionsMap, 
+  operatorSessionsMap,
   itemSessionsMap,
-  queryStart, 
-  queryEnd 
+  queryStart,
+  queryEnd
 }) {
   try {
     console.log(`[${new Date().toISOString()}] 🔧 Recalculating cache for machine ${machineSerial} using ${machineSessions.length} machine sessions, ${operatorSessionsMap.size} operators, ${itemSessionsMap.size} items`);
-    
+
     const dailyTotals = [];
 
     // 1. Build machine daily total
