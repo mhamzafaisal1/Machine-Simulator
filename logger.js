@@ -1,9 +1,9 @@
 // logger.js - Winston logger for machine simulator
-module.exports = function(mongoUri) {
-    return constructor(mongoUri);
+module.exports = function(logMongoUri) {
+    return constructor(logMongoUri);
 }
 
-function constructor(mongoUri) {
+function constructor(logMongoUri) {
     const winston = require('winston');
     require('winston-mongodb');
     require('winston-daily-rotate-file');
@@ -59,19 +59,23 @@ function constructor(mongoUri) {
     }
 
     // Add MongoDB transports if database is provided
-    if (mongoUri) {
+    // Log everything to simulator-everything collection
+    // Log only errors to simulator-error collection
+    if (logMongoUri) {
+        // Log everything (all levels) to simulator-everything collection
         logger.add(new winston.transports.MongoDB({
-            level: 'error',
-            db: mongoUri,
-            collection: 'simulator-error',
+            level: 'silly', // Log everything from silly level and above
+            db: logMongoUri,
+            collection: 'simulator-everything',
             options: { useUnifiedTopology: true },
             storeHost: true,
             capped: false
         }));
+        // Log only errors to simulator-error collection
         logger.add(new winston.transports.MongoDB({
-            level: 'warn',
-            db: mongoUri,
-            collection: 'simulator-warn',
+            level: 'error',
+            db: logMongoUri,
+            collection: 'simulator-error',
             options: { useUnifiedTopology: true },
             storeHost: true,
             capped: false
