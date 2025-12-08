@@ -7,15 +7,6 @@ module.exports = {
     mongoUsername: process.env.MONGO_USERNAME,
     mongoPassword: process.env.MONGO_PASSWORD,
     dbName: 'chitrac',
-    
-    // MongoDB (Winston Logging) - similar to chitrac-api structure
-    mongoLog: {
-        url: process.env.MONGO_LOG_URI || process.env.MONGO_URI,
-        db: process.env.MONGO_LOG_DB || 'chitrac-logging',
-        username: process.env.MONGO_LOG_USERNAME || process.env.MONGO_USERNAME,
-        password: process.env.MONGO_LOG_PASSWORD || process.env.MONGO_PASSWORD,
-        authSource: process.env.MONGO_LOG_AUTH_SOURCE || process.env.MONGO_AUTH_SOURCE || 'admin'
-    },
     collectionName: 'state-machine', // Renamed from 'state' to 'state-machine'
     countCollectionName: 'count',
     machineCollectionName: 'machine',

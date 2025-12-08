@@ -2220,8 +2220,18 @@ class MachineSimulator {
     );
 
     if (stateType === "Running") {
+      // ✅ FIX: Use operators from currentRunningState (assigned via assignOperatorsForRunningState)
+      // instead of record.operators (from buildStateRecord with modulo assignment)
+      // This ensures counts are generated for the same operators that have active operator sessions
+      const operatorsToUse = (this.currentRunningState && this.currentRunningState.operators) 
+        ? this.currentRunningState.operators 
+        : record.operators;
+      
+      // Update record.operators to match the operators we're actually using for counts
+      record.operators = operatorsToUse;
       this.currentRunningState = record;                // Keep original record (has operator.station)
-      record.operators.forEach((op) => {
+      
+      operatorsToUse.forEach((op) => {
         if (require('./utils').isValidOperatorId(op.id)) {
           this.simulateStationCounts(record, op.station, op);  // Use original record with station
         }
