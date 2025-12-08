@@ -22,7 +22,52 @@ const schemaValidator = require('./schema-validator');
 const schemaAdapters = require('./schema-adapters');
 const createLogger = require('./logger');
 
-const logger = createLogger(config.mongoUri);
+// Build logging database connection string (similar to chitrac-api pattern)
+function buildLoggingConnectionString() {
+    if (!config.mongoLog || !config.mongoLog.url) {
+        return null; // No logging database configured
+    }
+    
+    const logUsername = config.mongoLog.username;
+    const logPassword = config.mongoLog.password;
+    const logAuthSource = config.mongoLog.authSource || 'admin';
+    
+    if (!logUsername || !logPassword) {
+        return null; // No credentials provided
+    }
+    
+    // URL encode credentials
+    const encodedLogUsername = encodeURIComponent(logUsername);
+    const encodedLogPassword = encodeURIComponent(logPassword);
+    
+    let loggerConnectionString;
+    
+    if (config.mongoLog.url.startsWith('mongodb://')) {
+        const urlWithoutScheme = config.mongoLog.url.substring(10);
+        const slashIndex = urlWithoutScheme.indexOf('/');
+        
+        if (slashIndex === -1) {
+            // No database in URL
+            loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}/${config.mongoLog.db || 'chitrac-logging'}?authSource=${logAuthSource}`;
+        } else {
+            // Database specified in URL
+            loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}?authSource=${logAuthSource}`;
+        }
+    } else {
+        loggerConnectionString = config.mongoLog.url.replace('mongodb://', `mongodb://${encodedLogUsername}:${encodedLogPassword}@`);
+        // Add authSource
+        if (!loggerConnectionString.includes('?')) {
+            loggerConnectionString += `?authSource=${logAuthSource}`;
+        } else {
+            loggerConnectionString += `&authSource=${logAuthSource}`;
+        }
+    }
+    
+    return loggerConnectionString;
+}
+
+const logMongoUri = buildLoggingConnectionString();
+const logger = createLogger(logMongoUri);
 
 function toMeta(details) {
   if (!details) return undefined;
@@ -230,20 +275,20 @@ class MachineSimulator {
       if (!this.items || this.items.length === 0) {
         throw new Error('No active items loaded; cannot start session');
       }
-      console.log(`[${this.getTimestamp()}] ⚠️ currentItem is null, calling selectInitialItem() to fix`);
+      logWarn(`[${this.getTimestamp()}] ⚠️ currentItem is null, calling selectInitialItem() to fix`);
       this.selectInitialItem();
 
       // Verify the fix worked
       if (!this.currentItem) {
         throw new Error('Failed to set currentItem after calling selectInitialItem()');
       }
-      console.log(`[${this.getTimestamp()}] ✅ currentItem fixed: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
+      logInfo(`[${this.getTimestamp()}] ✅ currentItem fixed: ${this.currentItem.name} (ID: ${this.currentItem.number})`);
     }
 
     // For SPF machines, also ensure currentItems array is properly maintained
     if (this.isSpf()) {
       if (!this.currentItems || this.currentItems.length === 0) {
-        console.log(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
         this.currentItems = [this.currentItem, this.currentItem, this.currentItem, this.currentItem];
       }
 
@@ -275,7 +320,7 @@ class MachineSimulator {
     if (isSPF) {
       // For SPF machines, also ensure currentItems array is properly maintained
       if (!this.currentItems || this.currentItems.length === 0) {
-        console.log(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array is empty, rebuilding from currentItem`);
         this.currentItems = this.pickDistinct(this.items, 4); // Create 4 copies for SPF
       }
 
@@ -313,11 +358,11 @@ class MachineSimulator {
     if (this.isRunning) return;
 
     try {
-      console.log(`[${this.getTimestamp()}] 🚀 Starting simulator for ${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] 🚀 Starting simulator for ${this.machineConfig.name}`);
       await this.connectToMongoDB();
       await this.loadFaults();
       await this.loadItems();
-      console.log(`[${this.getTimestamp()}] 📦 Loaded ${this.items.length} items`);
+      logInfo(`[${this.getTimestamp()}] 📦 Loaded ${this.items.length} items`);
 
       // Validate that we have enough items for SPF machines
       if (this.isSpf() && this.items.length < 4) {
@@ -325,7 +370,7 @@ class MachineSimulator {
       }
 
       this.selectInitialItem();
-      console.log(`[${this.getTimestamp()}] 🎯 Initial item selection complete - currentItem: ${this.currentItem ? this.currentItem.name : 'null'}, isSPF: ${this.isSpf()}`);
+      logInfo(`[${this.getTimestamp()}] 🎯 Initial item selection complete - currentItem: ${this.currentItem ? this.currentItem.name : 'null'}, isSPF: ${this.isSpf()}`);
 
       // Assign operators before starting simulation loop to ensure first state has operators
       await this.assignInitialOperators();
@@ -358,7 +403,7 @@ class MachineSimulator {
     const db = this.client.db(this.dbName);
     const faultCollection = db.collection(config.faultCollectionName);
     this.validFaults = await faultCollection.find().sort({ code: 1 }).toArray();
-    console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.validFaults.length} fault types`);
+    logInfo(`[${this.getTimestamp()}] ✅ Loaded ${this.validFaults.length} fault types`);
 
     // ⭐ Validate adapted faults (non-breaking)
     try {
@@ -367,7 +412,7 @@ class MachineSimulator {
       for (const af of adapted) {
         if (Number.isFinite(af.id) && schemaValidator.validate('fault', af, { faultCode: af.id })) ok++;
       }
-      console.log(`[${this.getTimestamp()}] ✅ Fault schema validation: ${ok}/${adapted.length} adapted faults valid`);
+      logInfo(`[${this.getTimestamp()}] ✅ Fault schema validation: ${ok}/${adapted.length} adapted faults valid`);
       this.adaptedFaults = adapted; // optional reference
     } catch (e) {
       logWarn(`[${this.getTimestamp()}] ⚠️ Fault validation skipped: ${e.message}`);
@@ -391,7 +436,7 @@ class MachineSimulator {
       }
     });
     if (validItemCount > 0) {
-      console.log(`[${this.getTimestamp()}] ✅ ${validItemCount}/${this.items.length} items passed schema validation`);
+      logInfo(`[${this.getTimestamp()}] ✅ ${validItemCount}/${this.items.length} items passed schema validation`);
     }
   }
 
@@ -402,7 +447,7 @@ class MachineSimulator {
    */
   async loadTodaysSessions(startInterval = true) {
     try {
-      console.log(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
+      logInfo(`[${this.getTimestamp()}] 📥 Loading today's sessions into memory for cache building...`);
 
       const db = this.client.db(this.dbName);
       const machineSerial = this.machineConfig.id || this.machineConfig.serial;
@@ -417,7 +462,7 @@ class MachineSimulator {
       this.todayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
       const now = new Date();
 
-      console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
+      logInfo(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
 
       // Clear all cache arrays/maps BEFORE reloading
       this.cachedMachineSessions = [];
@@ -433,7 +478,7 @@ class MachineSimulator {
         .toArray();
       this.cachedMachineSessions = machineSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
 
-      console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
+      logInfo(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedMachineSessions.length} machine sessions`);
 
       // 2. Load fault sessions for this machine today
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
@@ -443,7 +488,7 @@ class MachineSimulator {
         .toArray();
       this.cachedFaultSessions = faultSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
 
-      console.log(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedFaultSessions.length} fault sessions`);
+      logInfo(`[${this.getTimestamp()}] ✅ Loaded ${this.cachedFaultSessions.length} fault sessions`);
 
       // 3. Load operator sessions for this machine today (group by operator ID)
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
@@ -480,7 +525,7 @@ class MachineSimulator {
         }
       }
 
-      console.log(`[${this.getTimestamp()}] ✅ Loaded ${operatorSessions.length} operator sessions for ${this.cachedOperatorSessions.size} operators`);
+      logInfo(`[${this.getTimestamp()}] ✅ Loaded ${operatorSessions.length} operator sessions for ${this.cachedOperatorSessions.size} operators`);
 
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
@@ -501,13 +546,13 @@ class MachineSimulator {
         }
       }
       
-      console.log(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
-      console.log(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
+      logInfo(`[${this.getTimestamp()}] ✅ Loaded ${itemSessions.length} item sessions for ${this.cachedItemSessions.size} items`);
+      logInfo(`[${this.getTimestamp()}] 🎉 Session cache initialized successfully!`);
 
       // ⭐ BOOT-TIME CACHE RECONSTRUCTION
       // If there are existing sessions from midnight to now, rebuild the cache totals
       if (this.cachedMachineSessions.length > 0 || operatorSessions.length > 0 || itemSessions.length > 0) {
-        console.log(`[${this.getTimestamp()}] 📊 Boot-time cache reconstruction: Found existing sessions, rebuilding totals-daily cache...`);
+        logInfo(`[${this.getTimestamp()}] 📊 Boot-time cache reconstruction: Found existing sessions, rebuilding totals-daily cache...`);
 
         try {
           // ⭐ Recalculate ALL operator sessions before cache reconstruction
@@ -519,7 +564,7 @@ class MachineSimulator {
             }
           }
 
-          console.log(`[${this.getTimestamp()}] 🔄 Recalculating all item sessions at boot...`);
+          logInfo(`[${this.getTimestamp()}] 🔄 Recalculating all item sessions at boot...`);
           recalcCount = 0;
           for (const sessions of this.cachedItemSessions.values()) {
             for (const session of sessions) {
@@ -527,7 +572,7 @@ class MachineSimulator {
               recalcCount++;
             }
           }
-          console.log(`[${this.getTimestamp()}] ✅ Recalculated ${recalcCount} item sessions`);
+          logInfo(`[${this.getTimestamp()}] ✅ Recalculated ${recalcCount} item sessions`);
 
 
           const result = await recalculateAndUpdateCache({
@@ -543,8 +588,8 @@ class MachineSimulator {
           });
 
           if (result.success) {
-            console.log(`[${this.getTimestamp()}] ✅ Boot-time cache reconstruction complete: ${result.recordsUpdated} records updated`);
-            console.log(`[${this.getTimestamp()}]    Machine: ${result.machineUpdated ? '✅' : '⏭️'}, Operators: ${result.operatorsUpdated}, Items: ${result.itemsUpdated}`);
+            logInfo(`[${this.getTimestamp()}] ✅ Boot-time cache reconstruction complete: ${result.recordsUpdated} records updated`);
+            logInfo(`[${this.getTimestamp()}]    Machine: ${result.machineUpdated ? '✅' : '⏭️'}, Operators: ${result.operatorsUpdated}, Items: ${result.itemsUpdated}`);
             logInfo('Boot-time cache reconstruction complete', {
               machine: this.machineConfig.name,
               recordsUpdated: result.recordsUpdated,
@@ -568,7 +613,7 @@ class MachineSimulator {
           // Don't throw - continue with simulation even if cache rebuild fails
         }
       } else {
-        console.log(`[${this.getTimestamp()}] ℹ️ No existing sessions found from midnight to now, starting fresh`);
+        logInfo(`[${this.getTimestamp()}] ℹ️ No existing sessions found from midnight to now, starting fresh`);
       }
 
       // ⭐ Start the recurring cache update interval (only if requested)
@@ -596,7 +641,7 @@ class MachineSimulator {
 
     // Initialize current hour start
     this.currentHourStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('hour').toJSDate();
-    console.log(`[${this.getTimestamp()}] 🕐 Current hour starts at: ${this.currentHourStart.toISOString()}`);
+    logInfo(`[${this.getTimestamp()}] 🕐 Current hour starts at: ${this.currentHourStart.toISOString()}`);
 
     // Check every minute if we need to do midnight or hourly actions
     setInterval(() => {
@@ -609,20 +654,20 @@ class MachineSimulator {
         const newHourStart = now.startOf('hour').toJSDate();
         if (this.currentHourStart.getTime() !== newHourStart.getTime()) {
           this.currentHourStart = newHourStart;
-          console.log(`[${this.getTimestamp()}] 🕐 Hour changed - new hour starts at: ${this.currentHourStart.toISOString()}`);
+          logInfo(`[${this.getTimestamp()}] 🕐 Hour changed - new hour starts at: ${this.currentHourStart.toISOString()}`);
         }
       }
 
       // At 11:59pm, shutdown machines
       if (hour === 23 && minute === 59 && !this.midnightShutdownDone) {
-        console.log(`[${this.getTimestamp()}] 🌙 11:59pm - Initiating midnight shutdown...`);
+        logInfo(`[${this.getTimestamp()}] 🌙 11:59pm - Initiating midnight shutdown...`);
         this.performMidnightShutdown();
         this.midnightShutdownDone = true;
       }
 
       // At 12:01am (or up to 12:02am if we missed the exact minute), restart machines
       if (hour === 0 && minute >= 1 && minute <= 2 && this.midnightShutdownDone) {
-        console.log(`[${this.getTimestamp()}] 🌅 12:0${minute}am - Initiating midnight restart...`);
+        logInfo(`[${this.getTimestamp()}] 🌅 12:0${minute}am - Initiating midnight restart...`);
         this.performMidnightRestart();
         this.midnightShutdownDone = false; // Reset for next day
       }
@@ -634,7 +679,7 @@ class MachineSimulator {
       }
     }, 60000); // Check every 60 seconds
 
-    console.log(`[${this.getTimestamp()}] ⏰ Midnight and hourly rollover scheduler started`);
+    logInfo(`[${this.getTimestamp()}] ⏰ Midnight and hourly rollover scheduler started`);
   }
 
   /**
@@ -643,7 +688,7 @@ class MachineSimulator {
    */
   async performMidnightShutdown() {
     try {
-      console.log(`[${this.getTimestamp()}] 🛑 Performing midnight shutdown...`);
+      logInfo(`[${this.getTimestamp()}] 🛑 Performing midnight shutdown...`);
 
       // Remember if machine was running
       this.wasRunningBeforeMidnight = this.inSession;
@@ -679,7 +724,7 @@ class MachineSimulator {
       await this.closeOpenOperatorSessions(shutdownState);
 
       // Final cache update for the day
-      console.log(`[${this.getTimestamp()}] 📊 Running final cache update for ${this.todayStart.toISOString().split('T')[0]}...`);
+      logInfo(`[${this.getTimestamp()}] 📊 Running final cache update for ${this.todayStart.toISOString().split('T')[0]}...`);
       await recalculateAndUpdateCache({
         db: this.client.db(this.dbName),
         machineSerial: this.machineConfig.id || this.machineConfig.serial,
@@ -692,7 +737,7 @@ class MachineSimulator {
         queryEnd: new Date()
       });
 
-      console.log(`[${this.getTimestamp()}] ✅ Midnight shutdown complete. Waiting for 12:01am restart...`);
+      logInfo(`[${this.getTimestamp()}] ✅ Midnight shutdown complete. Waiting for 12:01am restart...`);
 
     } catch (error) {
       logError(`[${this.getTimestamp()}] ❌ Error during midnight shutdown`, {
@@ -712,7 +757,7 @@ class MachineSimulator {
       const SYSTEM_TIMEZONE = 'America/Chicago';
       const newDayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
 
-      console.log(`[${this.getTimestamp()}] 🌅 Performing midnight restart for ${newDayStart.toISOString().split('T')[0]}...`);
+      logInfo(`[${this.getTimestamp()}] 🌅 Performing midnight restart for ${newDayStart.toISOString().split('T')[0]}...`);
 
       // Update todayStart to new day
       this.todayStart = newDayStart;
@@ -728,7 +773,7 @@ class MachineSimulator {
 
       // Restart machines if they were running before midnight
       if (this.wasRunningBeforeMidnight) {
-        console.log(`[${this.getTimestamp()}] 🔄 Restarting machines that were running before midnight...`);
+        logInfo(`[${this.getTimestamp()}] 🔄 Restarting machines that were running before midnight...`);
 
         const restartState = {
           timestamp: new Date(),
@@ -750,10 +795,10 @@ class MachineSimulator {
         await this.startOperatorSessions(restartState);
         await this.startItemSessions(restartState);
 
-        console.log(`[${this.getTimestamp()}] ✅ Machines restarted for new day`);
+        logInfo(`[${this.getTimestamp()}] ✅ Machines restarted for new day`);
       }
 
-      console.log(`[${this.getTimestamp()}] 🎉 Midnight restart complete! Now running on ${newDayStart.toISOString().split('T')[0]}`);
+      logInfo(`[${this.getTimestamp()}] 🎉 Midnight restart complete! Now running on ${newDayStart.toISOString().split('T')[0]}`);
 
     } catch (error) {
       logError(`[${this.getTimestamp()}] ❌ Error during midnight restart`, {
@@ -810,7 +855,7 @@ class MachineSimulator {
       });
 
       if (result.success) {
-        console.log(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.machineItemTotals} machine-items, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
+        logInfo(`[${this.getTimestamp()}] 📊 Cache updated: ${result.recordsUpdated} records (${result.machineTotals} machine, ${result.operatorTotals} operators, ${result.machineItemTotals} machine-items, ${result.itemTotals} items, ${result.operatorItemTotals} operator-items)`);
       } else {
         logError(`[${this.getTimestamp()}] ❌ Cache update failed`, {
           machine: this.machineConfig.name,
@@ -872,7 +917,7 @@ class MachineSimulator {
       });
 
       if (result.success) {
-        console.log(`[${this.getTimestamp()}] 📊 Hourly cache updated: ${result.recordsUpdated} records across ${result.hoursProcessed} hours`);
+        logInfo(`[${this.getTimestamp()}] 📊 Hourly cache updated: ${result.recordsUpdated} records across ${result.hoursProcessed} hours`);
       } else {
         logError(`[${this.getTimestamp()}] ❌ Hourly cache update failed`, {
           machine: this.machineConfig.name,
@@ -902,7 +947,7 @@ class MachineSimulator {
 
     const intervalMs = (config.cacheUpdateIntervalSeconds || 30) * 1000;
 
-    console.log(`[${this.getTimestamp()}] ⏰ Starting cache update interval (every ${config.cacheUpdateIntervalSeconds || 30} seconds)`);
+    logInfo(`[${this.getTimestamp()}] ⏰ Starting cache update interval (every ${config.cacheUpdateIntervalSeconds || 30} seconds)`);
 
     // Set recurring interval
     this.cacheUpdateInterval = setInterval(async () => {
@@ -918,7 +963,7 @@ class MachineSimulator {
     if (this.cacheUpdateInterval) {
       clearInterval(this.cacheUpdateInterval);
       this.cacheUpdateInterval = null;
-      console.log(`[${this.getTimestamp()}] ⏹️ Stopped cache update interval`);
+      logInfo(`[${this.getTimestamp()}] ⏹️ Stopped cache update interval`);
     }
   }
 
@@ -927,8 +972,8 @@ class MachineSimulator {
       this.currentItems = this.pickDistinct(this.items, 4);  // exactly four
       // For SPF machines, also set currentItem to the first item for session compatibility
       this.currentItem = this.currentItems[0];
-      console.log(`[${this.getTimestamp()}] 🎯 SPF initial items: ${this.currentItems.map(i => i.name).join(', ')}`);
-      console.log(`[${this.getTimestamp()}] 🎯 SPF currentItem set to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
+      logInfo(`[${this.getTimestamp()}] 🎯 SPF initial items: ${this.currentItems.map(i => i.name).join(', ')}`);
+      logInfo(`[${this.getTimestamp()}] 🎯 SPF currentItem set to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
 
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
@@ -936,7 +981,7 @@ class MachineSimulator {
       }
     } else {
       this.currentItem = selectRandomItem(this.items);       // exactly one
-      console.log(`[${this.getTimestamp()}] 🎯 Non-SPF currentItem set to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
+      logInfo(`[${this.getTimestamp()}] 🎯 Non-SPF currentItem set to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
     }
   }
 
@@ -946,15 +991,15 @@ class MachineSimulator {
     this.currentRunningState = {
       operators: assignedOperators
     };
-    console.log(`[${this.getTimestamp()}] 👥 Assigned ${assignedOperators.length} initial operators for ${this.machineConfig.name}`);
+    logInfo(`[${this.getTimestamp()}] 👥 Assigned ${assignedOperators.length} initial operators for ${this.machineConfig.name}`);
   }
 
   selectNextItem() {
     if (!shouldChangeItem()) {
       if (this.isSpf()) {
-        console.log(`[${this.getTimestamp()}] 🔄 Keeping current item set`);
+        logInfo(`[${this.getTimestamp()}] 🔄 Keeping current item set`);
       } else {
-        console.log(`[${this.getTimestamp()}] 🔄 Keeping current item: ${this.currentItem.name}`);
+        logInfo(`[${this.getTimestamp()}] 🔄 Keeping current item: ${this.currentItem.name}`);
       }
       return;
     }
@@ -963,8 +1008,8 @@ class MachineSimulator {
       this.currentItems = this.pickDistinct(this.items, 4);
       // For SPF machines, also update currentItem to the first item for session compatibility
       this.currentItem = this.currentItems[0];
-      console.log(`[${this.getTimestamp()}] 🔁 SPF new items: ${this.currentItems.map(i => i.name).join(', ')}`);
-      console.log(`[${this.getTimestamp()}] 🔁 SPF currentItem updated to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
+      logInfo(`[${this.getTimestamp()}] 🔁 SPF new items: ${this.currentItems.map(i => i.name).join(', ')}`);
+      logInfo(`[${this.getTimestamp()}] 🔁 SPF currentItem updated to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
 
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
@@ -972,7 +1017,7 @@ class MachineSimulator {
       }
     } else {
       this.currentItem = selectRandomItem(this.items);
-      console.log(`[${this.getTimestamp()}] 🔁 Non-SPF currentItem updated to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
+      logInfo(`[${this.getTimestamp()}] 🔁 Non-SPF currentItem updated to: ${this.currentItem.name} (ID: ${(this.currentItem.number ?? this.currentItem.id)})`);
     }
   }
 
@@ -991,7 +1036,7 @@ class MachineSimulator {
       return { code: 17, name: "Fault" };
     }
 
-    console.log(`[${this.getTimestamp()}] 🔧 Injecting fault: ${fault.code} - ${fault.name}`);
+    logInfo(`[${this.getTimestamp()}] 🔧 Injecting fault: ${fault.code} - ${fault.name}`);
     return fault;
   }
 
@@ -1108,7 +1153,7 @@ class MachineSimulator {
           currentlySimulatedIds.push(candidateOperator.id);
           const fullName = getFullName(candidateOperator);
           assignedOperators.push({ id: candidateOperator.id, name: fullName, station, rate: candidateOperator._rate || 1 });
-          console.log(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.id} (${fullName}) to station ${station} on machine ${machineSerial}`);
+          logInfo(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.id} (${fullName}) to station ${station} on machine ${machineSerial}`);
 
         } catch (error) {
           if (error.code === 11000) {
@@ -1136,7 +1181,7 @@ class MachineSimulator {
       } else {
         // Fallback: dummy operator
         assignedOperators.push({ id: -1, name: "Dummy", station, rate: 1 });
-        console.log(`[${this.getTimestamp()}] ⚠️ No operator available for station ${station}, using dummy operator`);
+        logWarn(`[${this.getTimestamp()}] ⚠️ No operator available for station ${station}, using dummy operator`);
       }
     }
 
@@ -1158,7 +1203,7 @@ class MachineSimulator {
         : { machineSerial };
       const result = await tickerCollection.deleteMany(deleteFilter);
       if (result.deletedCount > 0) {
-        console.log(`[${this.getTimestamp()}] 🧹 Cleaned up ${result.deletedCount} operator assignments for machine ${machineSerial}`);
+        logInfo(`[${this.getTimestamp()}] 🧹 Cleaned up ${result.deletedCount} operator assignments for machine ${machineSerial}`);
       }
     } catch (error) {
       logError(`[${this.getTimestamp()}] ❌ Error cleaning up operator assignments for machine ${machineSerial}`, {
@@ -1175,7 +1220,7 @@ class MachineSimulator {
       const sessionCollection = db.collection(config.machineSessionCollectionName);
 
       // Add explicit logging to verify SPF initialization
-      console.log(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
 
       // Use the new helper method to build current items array
       const currentItems = this.buildCurrentItemsArray();
@@ -1247,7 +1292,7 @@ class MachineSimulator {
       this.currentSessionId = result.insertedId;
       this.currentSessionStartTime = runningState.timestamp;
 
-      console.log(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] 🚀 Started machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
 
       // Push adapted session to in-memory cache array
       adaptedSession._id = result.insertedId;
@@ -1277,7 +1322,7 @@ class MachineSimulator {
       const coll = db.collection(config.operatorSessionCollectionName);
 
       // Add explicit logging to verify SPF initialization
-      console.log(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] itemsReady=${!!this.currentItem} type=${this.machineConfig.type} name=${this.machineConfig.name}`);
 
       // Use the new helper method to build current items array
       const currentItems = this.buildCurrentItemsArray();
@@ -1319,7 +1364,7 @@ class MachineSimulator {
         this.operatorSessionIdsByOperator.set(op.id, res.insertedId);
         this.operatorSessionIdsByStation.set(op.station, res.insertedId);
 
-        console.log(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
+        logInfo(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
 
         // Push session to in-memory cache array
         opDoc._id = res.insertedId;
@@ -1382,7 +1427,7 @@ class MachineSimulator {
         // Insert item session (raw format, not adapted)
         const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(doc));
         this.itemSessionIdsByItem.set(it.id, res.insertedId);
-        console.log(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
+        logInfo(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
 
         // Push session to in-memory cache array
         doc._id = res.insertedId;
@@ -1571,7 +1616,7 @@ class MachineSimulator {
 
       // Reduced logging to prevent console spam - only log every 100 updates
       if (totalCount % 100 === 0) {
-        console.log(`[${this.getTimestamp()}] 📊 Updated session ${sessionId} stats: runtime=${Math.round(runtime)}s, workTime=${Math.round(workTime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${Number(totalTimeCredit.toFixed(2))}s`);
+        logInfo(`[${this.getTimestamp()}] 📊 Updated session ${sessionId} stats: runtime=${Math.round(runtime)}s, workTime=${Math.round(workTime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${Number(totalTimeCredit.toFixed(2))}s`);
       }
 
     } catch (error) {
@@ -1680,7 +1725,7 @@ class MachineSimulator {
 
       // Reduced logging - only log every 100 counts
       if (totalCount % 100 === 0) {
-        console.log(`[${this.getTimestamp()}] 📊 Updated operator session ${sessionId} stats: runtime=${Math.round(runtime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${totalTimeCredit}s`);
+        logInfo(`[${this.getTimestamp()}] 📊 Updated operator session ${sessionId} stats: runtime=${Math.round(runtime)}s, totalCount=${totalCount}, misfeedCount=${misfeedCount}, timeCredit=${totalTimeCredit}s`);
       }
 
     } catch (error) {
@@ -1725,7 +1770,7 @@ class MachineSimulator {
       // Run final stats calculation
       await this.updateSessionStats();
 
-      console.log(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] 🛑 Ended machine session ${this.currentSessionId} for ${this.machineConfig.name}`);
       
       // ⭐ Sync in-memory cache array with updated session from DB
       const updatedSessionDoc = await sessionCollection.findOne({ _id: this.currentSessionId });
@@ -1798,7 +1843,7 @@ class MachineSimulator {
       this.operatorSessionIdsByOperator.clear();
       this.operatorSessionIdsByStation.clear();
 
-      console.log(`[${this.getTimestamp()}] 🛑 Ended all operator sessions for machine ${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] 🛑 Ended all operator sessions for machine ${this.machineConfig.name}`);
       
       // ⭐ Cache update will be triggered by endMachineSession
 
@@ -1823,11 +1868,11 @@ class MachineSimulator {
 
       const openIds = await coll.find(filter, { projection: { _id: 1 } }).toArray();
       if (!openIds.length) {
-        console.log(`[${this.getTimestamp()}] 🔍 No lingering operator sessions to close for ${this.machineConfig.name}`);
+        logInfo(`[${this.getTimestamp()}] 🔍 No lingering operator sessions to close for ${this.machineConfig.name}`);
         return;
       }
 
-      console.log(`[${this.getTimestamp()}] 🧹 Closing ${openIds.length} lingering operator sessions for ${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] 🧹 Closing ${openIds.length} lingering operator sessions for ${this.machineConfig.name}`);
 
       await Promise.all(
         openIds.map(async ({ _id }) => {
@@ -1882,7 +1927,7 @@ class MachineSimulator {
       }
 
       this.itemSessionIdsByItem.clear();
-      console.log(`[${this.getTimestamp()}] 🛑 Ended all item sessions for machine ${this.machineConfig.name}`);
+      logInfo(`[${this.getTimestamp()}] 🛑 Ended all item sessions for machine ${this.machineConfig.name}`);
       
       // ⭐ Cache recalculation is triggered by endMachineSession, so no need to call here
       
@@ -1955,7 +2000,7 @@ class MachineSimulator {
 
       // Reduced logging - only log every 100 counts
       if (totalCount % 100 === 0) {
-        console.log(`[${this.getTimestamp()}] 📊 Recalculated item session ${sessionId}: cnt=${totalCount}, tcredit=${totalTimeCredit}s`);
+        logInfo(`[${this.getTimestamp()}] 📊 Recalculated item session ${sessionId}: cnt=${totalCount}, tcredit=${totalTimeCredit}s`);
       }
     } catch (error) {
       logError(`[${this.getTimestamp()}] ❌ Error recalculating item session`, {
@@ -2024,7 +2069,7 @@ class MachineSimulator {
         : this.currentRunningState.operators;            // keep same operators within the session
 
       // Add logging after operator assignment
-      console.log(`[${this.getTimestamp()}] assignedOperators=${JSON.stringify(assignedOperators)}`);
+      logInfo(`[${this.getTimestamp()}] assignedOperators=${JSON.stringify(assignedOperators)}`);
 
       this.inSession = true;                    // now we are in-session
       // Build Running record with assigned operators
@@ -2217,7 +2262,7 @@ class MachineSimulator {
       // Insert fault session (raw format, not adapted)
       const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(doc));
       this.currentFaultSessionId = res.insertedId;
-      console.log(`[${this.getTimestamp()}] 🚨 Started fault session ${res.insertedId}`);
+      logInfo(`[${this.getTimestamp()}] 🚨 Started fault session ${res.insertedId}`);
 
       // Push session to in-memory cache array
       doc._id = res.insertedId;
@@ -2247,7 +2292,7 @@ class MachineSimulator {
       );
 
       await this.recalculateFaultSession(this.currentFaultSessionId);
-      console.log(`[${this.getTimestamp()}] ✅ Ended fault session ${this.currentFaultSessionId}`);
+      logInfo(`[${this.getTimestamp()}] ✅ Ended fault session ${this.currentFaultSessionId}`);
       
       // ⭐ Sync in-memory cache array with updated session from DB
       const updatedSessionDoc = await coll.findOne({ _id: this.currentFaultSessionId });
@@ -2310,7 +2355,7 @@ class MachineSimulator {
       
       // Log only at start/end of fault sessions to reduce spam
       if (s.timestamps.end) {
-        console.log(`[${this.getTimestamp()}] 🧮 Recalc fault session ${sessionId}: faulttime=${Math.round(faulttime)}s missed=${Math.round(workTimeMissed)}s`);
+        logInfo(`[${this.getTimestamp()}] 🧮 Recalc fault session ${sessionId}: faulttime=${Math.round(faulttime)}s missed=${Math.round(workTimeMissed)}s`);
       }
     } catch (e) {
       logError(`[${this.getTimestamp()}] ❌ Error recalculating fault session`, {
@@ -2384,7 +2429,7 @@ class MachineSimulator {
     await this.cleanupOperatorAssignments();
 
     await this.client?.close();
-    console.log(`[${this.getTimestamp()}] 🛑 Simulator stopped`);
+    logInfo(`[${this.getTimestamp()}] 🛑 Simulator stopped`);
   }
 
   simulateStationCounts(runningState, station, operator) {

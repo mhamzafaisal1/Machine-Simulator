@@ -4,6 +4,73 @@
 
 const { DateTime } = require('luxon');
 const schemaValidator = require('./schema-validator');
+const config = require('./config');
+const createLogger = require('./logger');
+
+// Build logging database connection string (similar to simulation-worker.js)
+function buildLoggingConnectionString() {
+    if (!config.mongoLog || !config.mongoLog.url) {
+        return null; // No logging database configured
+    }
+    
+    const logUsername = config.mongoLog.username;
+    const logPassword = config.mongoLog.password;
+    const logAuthSource = config.mongoLog.authSource || 'admin';
+    
+    if (!logUsername || !logPassword) {
+        return null; // No credentials provided
+    }
+    
+    // URL encode credentials
+    const encodedLogUsername = encodeURIComponent(logUsername);
+    const encodedLogPassword = encodeURIComponent(logPassword);
+    
+    let loggerConnectionString;
+    
+    if (config.mongoLog.url.startsWith('mongodb://')) {
+        const urlWithoutScheme = config.mongoLog.url.substring(10);
+        const slashIndex = urlWithoutScheme.indexOf('/');
+        
+        if (slashIndex === -1) {
+            // No database in URL
+            loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}/${config.mongoLog.db || 'chitrac-logging'}?authSource=${logAuthSource}`;
+        } else {
+            // Database specified in URL
+            loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}?authSource=${logAuthSource}`;
+        }
+    } else {
+        loggerConnectionString = config.mongoLog.url.replace('mongodb://', `mongodb://${encodedLogUsername}:${encodedLogPassword}@`);
+        // Add authSource
+        if (!loggerConnectionString.includes('?')) {
+            loggerConnectionString += `?authSource=${logAuthSource}`;
+        } else {
+            loggerConnectionString += `&authSource=${logAuthSource}`;
+        }
+    }
+    
+    return loggerConnectionString;
+}
+
+const logMongoUri = buildLoggingConnectionString();
+const logger = createLogger(logMongoUri);
+
+function logInfo(message, details) {
+    if (logger && typeof logger.info === 'function') {
+        logger.info(message, details);
+    }
+}
+
+function logWarn(message, details) {
+    if (logger && typeof logger.warn === 'function') {
+        logger.warn(message, details);
+    }
+}
+
+function logError(message, details) {
+    if (logger && typeof logger.error === 'function') {
+        logger.error(message, details);
+    }
+}
 
 const SYSTEM_TIMEZONE = 'America/Chicago';
 
@@ -242,7 +309,7 @@ function buildMachineHourlyTotal({ machineSerial, machineName, machineSessions, 
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building machine hourly total for machine ${machineSerial}:`, error);
+    logError(`Error building machine hourly total for machine ${machineSerial}`, { error: error.message, stack: error.stack, machineSerial });
     return null;
   }
 }
@@ -345,7 +412,7 @@ function buildMachineDailyTotal({ machineSerial, machineName, machineSessions, f
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building machine daily total for machine ${machineSerial}:`, error);
+    logError(`Error building machine daily total for machine ${machineSerial}`, { error: error.message, stack: error.stack, machineSerial });
     return null;
   }
 }
@@ -429,7 +496,7 @@ function buildOperatorMachineDailyTotal({ operatorId, operatorName, machineSeria
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building operator daily total for operator ${operatorId} on machine ${machineSerial}:`, error);
+    logError(`Error building operator daily total for operator ${operatorId} on machine ${machineSerial}`, { error: error.message, stack: error.stack, operatorId, machineSerial });
     return null;
   }
 }
@@ -482,7 +549,7 @@ function buildOperatorMachineHourlyTotal({ operatorId, operatorName, machineSeri
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building operator hourly total for operator ${operatorId} on machine ${machineSerial}:`, error);
+    logError(`Error building operator hourly total for operator ${operatorId} on machine ${machineSerial}`, { error: error.message, stack: error.stack, operatorId, machineSerial });
     return null;
   }
 }
@@ -542,7 +609,7 @@ function buildItemMachineHourlyTotal({ itemId, itemName, machineSerial, machineN
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building item-machine hourly total for item ${itemId} on machine ${machineSerial}:`, error);
+    logError(`Error building item-machine hourly total for item ${itemId} on machine ${machineSerial}`, { error: error.message, stack: error.stack, itemId, machineSerial });
     return null;
   }
 }
@@ -595,7 +662,7 @@ function buildItemHourlyTotal({ itemId, itemName, itemStandard, machineSerial, i
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building item hourly total for item ${itemId}:`, error);
+    logError(`Error building item hourly total for item ${itemId}`, { error: error.message, stack: error.stack, itemId });
     return null;
   }
 }
@@ -647,7 +714,7 @@ function buildOperatorItemHourlyTotal({ operatorId, operatorName, itemId, itemNa
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building operator-item hourly total for operator ${operatorId} and item ${itemId}:`, error);
+    logError(`Error building operator-item hourly total for operator ${operatorId} and item ${itemId}`, { error: error.message, stack: error.stack, operatorId, itemId });
     return null;
   }
 }
@@ -748,7 +815,7 @@ function buildItemMachineDailyTotal({ itemId, itemName, machineSerial, machineNa
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building item-machine daily total for item ${itemId} on machine ${machineSerial}:`, error);
+    logError(`Error building item-machine daily total for item ${itemId} on machine ${machineSerial}`, { error: error.message, stack: error.stack, itemId, machineSerial });
     return null;
   }
 }
@@ -830,7 +897,7 @@ function buildItemDailyTotal({ itemId, itemName, itemStandard, machineSerial, it
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building item daily total for item ${itemId}:`, error);
+    logError(`Error building item daily total for item ${itemId}`, { error: error.message, stack: error.stack, itemId });
     return null;
   }
 }
@@ -927,7 +994,7 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
       version: '1.0.0'
     };
   } catch (error) {
-    console.error(`Error building operator-item daily total for operator ${operatorId} and item ${itemId}:`, error);
+    logError(`Error building operator-item daily total for operator ${operatorId} and item ${itemId}`, { error: error.message, stack: error.stack, operatorId, itemId });
     return null;
   }
 }
@@ -944,13 +1011,13 @@ function buildOperatorItemDailyTotal({ operatorId, operatorName, itemId, itemNam
 async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'totals-daily') {
   try {
     if (!dailyTotals || dailyTotals.length === 0) {
-      console.warn(`[${new Date().toISOString()}] ⚠️ No daily totals to upsert`);
+      logWarn(`[${new Date().toISOString()}] ⚠️ No daily totals to upsert`);
       return { upsertedCount: 0, modifiedCount: 0 };
     }
 
     const cacheCollection = db.collection(collectionName);
 
-    console.log(`[${new Date().toISOString()}] 🔄 Upserting ${dailyTotals.length} records to ${collectionName}...`);
+    logInfo(`[${new Date().toISOString()}] 🔄 Upserting ${dailyTotals.length} records to ${collectionName}...`);
 
     // ✅ FIX: Use $set for ALL entity types (no more $inc)
     // Prepare bulk operations for upsert
@@ -969,14 +1036,14 @@ async function upsertDailyTotalsToCache(db, dailyTotals, collectionName = 'total
     // Execute bulk write
     const result = await cacheCollection.bulkWrite(ops, { ordered: false });
     
-    console.log(`[${new Date().toISOString()}] ✅ Upserted ${result.upsertedCount} new, modified ${result.modifiedCount} existing records`);
+    logInfo(`[${new Date().toISOString()}] ✅ Upserted ${result.upsertedCount} new, modified ${result.modifiedCount} existing records`);
     
     return {
       upsertedCount: result.upsertedCount,
       modifiedCount: result.modifiedCount
     };
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] ❌ Error upserting daily totals to cache:`, error);
+    logError(`[${new Date().toISOString()}] ❌ Error upserting daily totals to cache`, { error: error.message, stack: error.stack });
     throw error;
   }
 }
@@ -1007,7 +1074,7 @@ async function recalculateAndUpdateCache({
   queryEnd
 }) {
   try {
-    console.log(`[${new Date().toISOString()}] 🔧 Recalculating cache for machine ${machineSerial} using ${machineSessions.length} machine sessions, ${operatorSessionsMap.size} operators, ${itemSessionsMap.size} items`);
+    logInfo(`[${new Date().toISOString()}] 🔧 Recalculating cache for machine ${machineSerial} using ${machineSessions.length} machine sessions, ${operatorSessionsMap.size} operators, ${itemSessionsMap.size} items`);
 
     const dailyTotals = [];
 
@@ -1023,7 +1090,7 @@ async function recalculateAndUpdateCache({
     
     if (machineDailyTotal) {
       dailyTotals.push(machineDailyTotal);
-      console.log(`[${new Date().toISOString()}] ✅ Built machine total: ${machineDailyTotal.totalCounts} counts, ${machineDailyTotal.runtimeMs}ms runtime`);
+      logInfo(`[${new Date().toISOString()}] ✅ Built machine total: ${machineDailyTotal.totalCounts} counts, ${machineDailyTotal.runtimeMs}ms runtime`);
     }
 
     // 2. Build operator-machine daily totals
@@ -1134,7 +1201,7 @@ async function recalculateAndUpdateCache({
       }
     }
     
-    console.log(`[${new Date().toISOString()}] 📊 Built ${operatorItemCount} operator-item totals`);
+    logInfo(`[${new Date().toISOString()}] 📊 Built ${operatorItemCount} operator-item totals`);
 
     // 5. Upsert all daily totals to cache in one batch
     const result = await upsertDailyTotalsToCache(db, dailyTotals);
@@ -1149,7 +1216,7 @@ async function recalculateAndUpdateCache({
       operatorItemTotals: operatorItemCount
     };
   } catch (error) {
-    console.error('Error recalculating and updating cache:', error);
+    logError('Error recalculating and updating cache', { error: error.message, stack: error.stack });
     return {
       success: false,
       error: error.message
@@ -1163,12 +1230,12 @@ async function recalculateAndUpdateCache({
 async function upsertHourlyTotalsToCache(db, hourlyTotals, collectionName = 'hourly-totals') {
   try {
     if (!hourlyTotals || hourlyTotals.length === 0) {
-      console.warn(`[${new Date().toISOString()}] ⚠️ No hourly totals to upsert`);
+      logWarn(`[${new Date().toISOString()}] ⚠️ No hourly totals to upsert`);
       return { upsertedCount: 0, modifiedCount: 0 };
     }
 
     const cacheCollection = db.collection(collectionName);
-    console.log(`[${new Date().toISOString()}] 🔄 Upserting ${hourlyTotals.length} records to ${collectionName}...`);
+    logInfo(`[${new Date().toISOString()}] 🔄 Upserting ${hourlyTotals.length} records to ${collectionName}...`);
 
     const ops = hourlyTotals.map(total => ({
       updateOne: {
@@ -1179,14 +1246,14 @@ async function upsertHourlyTotalsToCache(db, hourlyTotals, collectionName = 'hou
     }));
 
     const result = await cacheCollection.bulkWrite(ops, { ordered: false });
-    console.log(`[${new Date().toISOString()}] ✅ Upserted ${result.upsertedCount} new, modified ${result.modifiedCount} existing hourly records`);
+    logInfo(`[${new Date().toISOString()}] ✅ Upserted ${result.upsertedCount} new, modified ${result.modifiedCount} existing hourly records`);
 
     return {
       upsertedCount: result.upsertedCount,
       modifiedCount: result.modifiedCount
     };
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] ❌ Error upserting hourly totals to cache:`, error);
+    logError(`[${new Date().toISOString()}] ❌ Error upserting hourly totals to cache`, { error: error.message, stack: error.stack });
     throw error;
   }
 }
@@ -1208,7 +1275,7 @@ async function recalculateAndUpdateHourlyCache({
   queryEnd
 }) {
   try {
-    console.log(`[${new Date().toISOString()}] 🔧 Recalculating hourly cache for machine ${machineSerial} from ${todayStart.toISOString()} to ${queryEnd.toISOString()}`);
+    logInfo(`[${new Date().toISOString()}] 🔧 Recalculating hourly cache for machine ${machineSerial} from ${todayStart.toISOString()} to ${queryEnd.toISOString()}`);
 
     const hourlyTotals = [];
 
@@ -1349,10 +1416,10 @@ async function recalculateAndUpdateHourlyCache({
     }
 
     if (hourCount >= maxHours) {
-      console.warn(`[${new Date().toISOString()}] ⚠️ Hourly cache loop hit max hours limit (${maxHours}), may have incomplete totals`);
+      logWarn(`[${new Date().toISOString()}] ⚠️ Hourly cache loop hit max hours limit (${maxHours}), may have incomplete totals`);
     }
 
-    console.log(`[${new Date().toISOString()}] 📊 Built ${hourlyTotals.length} hourly total records across ${Math.ceil((queryEnd - todayStart) / (1000 * 60 * 60))} hours`);
+    logInfo(`[${new Date().toISOString()}] 📊 Built ${hourlyTotals.length} hourly total records across ${Math.ceil((queryEnd - todayStart) / (1000 * 60 * 60))} hours`);
 
     // 6. Upsert all hourly totals to cache in one batch
     const result = await upsertHourlyTotalsToCache(db, hourlyTotals);
@@ -1364,7 +1431,7 @@ async function recalculateAndUpdateHourlyCache({
       totalRecords: hourlyTotals.length
     };
   } catch (error) {
-    console.error('Error recalculating and updating hourly cache:', error);
+    logError('Error recalculating and updating hourly cache', { error: error.message, stack: error.stack });
     return {
       success: false,
       error: error.message

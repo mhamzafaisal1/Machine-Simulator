@@ -64,7 +64,39 @@ class FillmoreSimulator {
       this.keepAlive();
       
     } catch (error) {
-      console.error('❌ Failed to start Fillmore simulator:', error.message);
+      // Initialize logger for error logging
+      const createLogger = require('./logger');
+      const config = require('./config');
+      function buildLoggingConnectionString() {
+          if (!config.mongoLog || !config.mongoLog.url) return null;
+          const logUsername = config.mongoLog.username;
+          const logPassword = config.mongoLog.password;
+          const logAuthSource = config.mongoLog.authSource || 'admin';
+          if (!logUsername || !logPassword) return null;
+          const encodedLogUsername = encodeURIComponent(logUsername);
+          const encodedLogPassword = encodeURIComponent(logPassword);
+          let loggerConnectionString;
+          if (config.mongoLog.url.startsWith('mongodb://')) {
+              const urlWithoutScheme = config.mongoLog.url.substring(10);
+              const slashIndex = urlWithoutScheme.indexOf('/');
+              if (slashIndex === -1) {
+                  loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}/${config.mongoLog.db || 'chitrac-logging'}?authSource=${logAuthSource}`;
+              } else {
+                  loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}?authSource=${logAuthSource}`;
+              }
+          } else {
+              loggerConnectionString = config.mongoLog.url.replace('mongodb://', `mongodb://${encodedLogUsername}:${encodedLogPassword}@`);
+              if (!loggerConnectionString.includes('?')) {
+                  loggerConnectionString += `?authSource=${logAuthSource}`;
+              } else {
+                  loggerConnectionString += `&authSource=${logAuthSource}`;
+              }
+          }
+          return loggerConnectionString;
+      }
+      const logMongoUri = buildLoggingConnectionString();
+      const logger = createLogger(logMongoUri);
+      logger.error('❌ Failed to start Fillmore simulator', { error: error.message, stack: error.stack });
       process.exit(1);
     }
   }
@@ -160,7 +192,41 @@ function main() {
   
   // Start the simulator
   const simulator = new FillmoreSimulator();
-  simulator.start().catch(console.error);
+  // Initialize logger for error logging
+  const createLogger = require('./logger');
+  const config = require('./config');
+  function buildLoggingConnectionString() {
+      if (!config.mongoLog || !config.mongoLog.url) return null;
+      const logUsername = config.mongoLog.username;
+      const logPassword = config.mongoLog.password;
+      const logAuthSource = config.mongoLog.authSource || 'admin';
+      if (!logUsername || !logPassword) return null;
+      const encodedLogUsername = encodeURIComponent(logUsername);
+      const encodedLogPassword = encodeURIComponent(logPassword);
+      let loggerConnectionString;
+      if (config.mongoLog.url.startsWith('mongodb://')) {
+          const urlWithoutScheme = config.mongoLog.url.substring(10);
+          const slashIndex = urlWithoutScheme.indexOf('/');
+          if (slashIndex === -1) {
+              loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}/${config.mongoLog.db || 'chitrac-logging'}?authSource=${logAuthSource}`;
+          } else {
+              loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}?authSource=${logAuthSource}`;
+          }
+      } else {
+          loggerConnectionString = config.mongoLog.url.replace('mongodb://', `mongodb://${encodedLogUsername}:${encodedLogPassword}@`);
+          if (!loggerConnectionString.includes('?')) {
+              loggerConnectionString += `?authSource=${logAuthSource}`;
+          } else {
+              loggerConnectionString += `&authSource=${logAuthSource}`;
+          }
+      }
+      return loggerConnectionString;
+  }
+  const logMongoUri = buildLoggingConnectionString();
+  const logger = createLogger(logMongoUri);
+  simulator.start().catch((error) => {
+    logger.error('Failed to start Fillmore simulator', { error: error.message, stack: error.stack });
+  });
 }
 
 // Run if this file is executed directly
