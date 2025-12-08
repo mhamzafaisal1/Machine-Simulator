@@ -132,7 +132,15 @@ function getWorkedSeconds(s) {
   if (Number.isFinite(s.metrics?.timers?.worked)) return s.metrics.timers.worked;
   if (Number.isFinite(s.workTime)) return s.workTime;
 
-  // derive from runtime * resolved stations
+  // ✅ FIX: For operator sessions, workTime = runtime (single operator, don't multiply by stations)
+  // Operator sessions have operator.id (singular), machine sessions have operators array (plural)
+  const isOperatorSession = s.operator?.id !== undefined && s.operator?.id !== -1;
+  if (isOperatorSession) {
+    // For operator sessions, workTime equals runtime (one operator per session)
+    return getRuntimeSeconds(s);
+  }
+
+  // For machine sessions: derive from runtime * resolved stations
   const runtime = getRuntimeSeconds(s);
   const stations = resolveActiveStations(s);
   return runtime * stations;
