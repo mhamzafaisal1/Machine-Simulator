@@ -5,6 +5,12 @@ const config = require('./config');
 const schemaValidator = require('./schema-validator');
 const schemaAdapters = require('./schema-adapters');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+
 // MongoDB connection settings (from centralized config)
 const mongoUri = config.mongoUri;
 const dbName = config.dbName;
@@ -46,7 +52,7 @@ async function fetchMachinesFromMongoDB() {
   
   try {
     await client.connect();
-    console.log('🔗 Connected to MongoDB to fetch machine data');
+    devLog('🔗 Connected to MongoDB to fetch machine data');
     
     const db = client.db(dbName);
     const collection = db.collection(machineCollectionName);
@@ -78,7 +84,7 @@ async function fetchMachinesFromMongoDB() {
       return adapted;
     });
 
-    console.log(`📋 Fetched ${adaptedMachines.length} machines from MongoDB`);
+    devLog(`📋 Fetched ${adaptedMachines.length} machines from MongoDB`);
     return adaptedMachines;
     
   } catch (error) {
@@ -125,7 +131,7 @@ function validateMachineConfig(machine) {
 
 // Validate all machines
 async function validateAllMachines() {
-  console.log('🔍 Validating Fillmore machine configurations...');
+  devLog('🔍 Validating Fillmore machine configurations...');
 
   const machines = await getMachines();
   let validMachineCount = 0;
@@ -142,15 +148,15 @@ async function validateAllMachines() {
         validMachineCount++;
       }
 
-      console.log(`✅ Machine ${index + 1}: ${machine.name} (${machine.type}) - ${machine.lanes} lanes - Valid`);
+      devLog(`✅ Machine ${index + 1}: ${machine.name} (${machine.type}) - ${machine.lanes} lanes - Valid`);
     } catch (error) {
       console.error(`❌ Machine ${index + 1}: ${machine.name} - ${error.message}`);
       throw error;
     }
   });
 
-  console.log(`✅ All ${machines.length} machines validated successfully!`);
-  console.log(`✅ ${validMachineCount}/${machines.length} machines passed schema validation`);
+  devLog(`✅ All ${machines.length} machines validated successfully!`);
+  devLog(`✅ ${validMachineCount}/${machines.length} machines passed schema validation`);
 }
 
 // Get active machines only
@@ -175,7 +181,7 @@ async function getMachineBySerial(serial) {
 function clearCache() {
   machineCache = null;
   lastCacheTime = null;
-  console.log('🗑️ Machine cache cleared');
+  devLog('🗑️ Machine cache cleared');
 }
 
 module.exports = {

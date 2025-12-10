@@ -6,14 +6,20 @@ const { validateAllMachines, getActiveMachines } = require('./fillmore-machines'
 const schemaValidator = require('./schema-validator');
 const config = require('./config');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+
 class FillmoreSimulator {
   constructor() {
     this.manager = new SimulationManager();
   }
 
   async start() {
-    console.log('🏭 Fillmore Manufacturing Facility Simulator');
-    console.log('==============================================');
+    devLog('🏭 Fillmore Manufacturing Facility Simulator');
+    devLog('==============================================');
     
     // Print MongoDB connection info
     const mongoUri = config.mongoUri || 'Not configured';
@@ -21,19 +27,19 @@ class FillmoreSimulator {
     const maskedUri = mongoUri.includes('@') 
       ? mongoUri.replace(/:\/\/[^:]+:[^@]+@/, '://****:****@') 
       : mongoUri;
-    console.log(`\n📊 MongoDB Connection:`);
-    console.log(`   URI: ${maskedUri}`);
-    console.log(`   Database: ${config.dbName}`);
+    devLog(`\n📊 MongoDB Connection:`);
+    devLog(`   URI: ${maskedUri}`);
+    devLog(`   Database: ${config.dbName}`);
     
     try {
       // Validate configurations
-      console.log('\n🔍 Validating machine configurations...');
+      devLog('\n🔍 Validating machine configurations...');
       await validateAllMachines();
       
       // Show machine summary
       const activeMachines = await getActiveMachines();
-      console.log('\n📋 Machine Summary:');
-      console.log(`   Total Machines: ${activeMachines.length}`);
+      devLog('\n📋 Machine Summary:');
+      devLog(`   Total Machines: ${activeMachines.length}`);
       
       const machineTypes = {};
       activeMachines.forEach(machine => {
@@ -41,24 +47,24 @@ class FillmoreSimulator {
       });
       
       Object.entries(machineTypes).forEach(([type, count]) => {
-        console.log(`   ${type}: ${count} machine(s)`);
+        devLog(`   ${type}: ${count} machine(s)`);
       });
       
       // Show lanes information
-      console.log('\n🏭 Machine Lanes Configuration:');
+      devLog('\n🏭 Machine Lanes Configuration:');
       activeMachines.forEach(machine => {
         // Use _stationsArray if available, otherwise generate from lanes
         const stationsArray = machine._stationsArray || Array.from({length: machine.lanes}, (_, i) => i + 1);
-        console.log(`   ${machine.name}: ${machine.lanes} lane(s) - Stations: [${stationsArray.join(', ')}]`);
+        devLog(`   ${machine.name}: ${machine.lanes} lane(s) - Stations: [${stationsArray.join(', ')}]`);
       });
       
-      console.log('\n🚀 Starting all machines...');
+      devLog('\n🚀 Starting all machines...');
       
       // Start all machines
       await this.manager.startAllMachines();
       
-      console.log('\n✅ Fillmore simulator is now running!');
-      console.log('   Press Ctrl+C to stop all machines');
+      devLog('\n✅ Fillmore simulator is now running!');
+      devLog('   Press Ctrl+C to stop all machines');
       
       // Keep the process alive
       this.keepAlive();
@@ -102,14 +108,14 @@ class FillmoreSimulator {
   }
 
   async stop() {
-    console.log('\n🛑 Stopping Fillmore simulator...');
+    devLog('\n🛑 Stopping Fillmore simulator...');
 
     // ⭐ PHASE 1: Print final validation statistics
-    console.log('\n📊 Final Schema Validation Report:');
+    devLog('\n📊 Final Schema Validation Report:');
     schemaValidator.printStats();
 
     await this.manager.stopAllMachines();
-    console.log('✅ Fillmore simulator stopped');
+    devLog('✅ Fillmore simulator stopped');
   }
 
   getStatus() {
@@ -122,13 +128,13 @@ class FillmoreSimulator {
     
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
-      console.log('\n🛑 Received SIGINT, shutting down Fillmore simulator...');
+      devLog('\n🛑 Received SIGINT, shutting down Fillmore simulator...');
       await this.stop();
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
-      console.log('\n🛑 Received SIGTERM, shutting down Fillmore simulator...');
+      devLog('\n🛑 Received SIGTERM, shutting down Fillmore simulator...');
       await this.stop();
       process.exit(0);
     });
@@ -147,6 +153,7 @@ class FillmoreSimulator {
 
 // Show help
 function showHelp() {
+  // Help should always be shown
   console.log(`
 🏭 Fillmore Manufacturing Facility Simulator
 

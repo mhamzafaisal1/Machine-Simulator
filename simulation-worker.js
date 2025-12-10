@@ -89,16 +89,20 @@ function logWith(level, message, details) {
     logger[level](message, meta);
   }
 
-  const consoleFn = level === 'error'
-    ? console.error
-    : level === 'warn'
-      ? console.warn
-      : console.log;
+  // Only output to console in development mode (errors always logged)
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev || level === 'error') {
+    const consoleFn = level === 'error'
+      ? console.error
+      : level === 'warn'
+        ? console.warn
+        : console.log;
 
-  if (meta) {
-    consoleFn(message, meta);
-  } else {
-    consoleFn(message);
+    if (meta) {
+      consoleFn(message, meta);
+    } else {
+      consoleFn(message);
+    }
   }
 }
 
