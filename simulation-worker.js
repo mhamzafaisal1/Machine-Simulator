@@ -1535,8 +1535,19 @@ class MachineSimulator {
           }
         }
 
+        // ✅ FIX: Track processed items to prevent duplicate counting when sessionItems has duplicates
+        const processedItems = new Set();
+
         // Calculate totals and time credits for each item in the session items array
         for (const item of sessionItems) {
+          // If this item ID was already processed, push 0 to avoid double-counting
+          if (processedItems.has(item.id)) {
+            totalByItem.push(0);
+            timeCreditByItem.push(0);
+            continue;
+          }
+
+          processedItems.add(item.id);
           const countTotal = itemTypeCounts[item.id] || 0;
           const pph = normalizePPH(item.standard);
 
@@ -1668,7 +1679,16 @@ class MachineSimulator {
       const misfeedCount = s.misfeeds.length;
 
       // Build arrays aligned to s.items order
+      // ✅ FIX: Track counted items to prevent duplicate counting when items array has duplicates
+      const countedItems = new Set();
+
       const byItem = s.items.map((it) => {
+        // If this item ID was already counted, return 0 to avoid double-counting
+        if (countedItems.has(it.id)) {
+          return { countTotal: 0, tci: 0 };
+        }
+
+        countedItems.add(it.id);
         const countTotal = s.counts.reduce((acc, c) => acc + (c.item?.id === it.id ? 1 : 0), 0);
         const pph = this.normalizePPH(Number(it.standard) || 0);
         const tci = pph > 0 ? countTotal / (pph / 3600) : 0;
