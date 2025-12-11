@@ -1726,18 +1726,10 @@ class MachineSimulator {
       const s = doc ? schemaAdapters.prepareDocFromMongo(doc) : null;
       if (!s) return;
 
-      // ⭐ SKIP sessions in incompatible format (old schema-adapted sessions with no data)
-      // These sessions have:
-      // - counts as object {valid: [], misfeed: []} instead of array
-      // - Empty counts.valid array (no usable data)
-      // We can't recalculate these because the data structure is incompatible
-      const countsIsObject = s.counts && typeof s.counts === 'object' && !Array.isArray(s.counts);
-      const hasEmptyCounts = countsIsObject &&
-                            Array.isArray(s.counts?.valid) &&
-                            s.counts.valid.length === 0;
-
-      if (countsIsObject && hasEmptyCounts) {
-        return; // Skip this session, it has no useful data
+      // ⭐ SKIP sessions that are missing required data
+      // Check if session has the items array needed for calculations
+      if (!s.items || !Array.isArray(s.items)) {
+        return; // Skip this session, it's missing required items array
       }
 
       // Handle timestamps that may be Date objects or ISO strings
@@ -1795,9 +1787,11 @@ class MachineSimulator {
           const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
-            // Also sync counts and misfeeds arrays from the database session
-            sessions[sessionIndex].counts = s.counts || [];
-            sessions[sessionIndex].misfeeds = s.misfeeds || [];
+            // Also sync counts structure from the database session
+            // Schema uses counts as object with {valid: [], misfeed: []}
+            if (s.counts) {
+              sessions[sessionIndex].counts = s.counts;
+            }
           } else {
             // ⚠️ WARNING: Session not found in cache - this indicates a sync issue
             // FIX: Add the session to the cache to keep them in sync
@@ -1809,8 +1803,10 @@ class MachineSimulator {
             });
             // Add the session to the cache with current values
             const sessionWithUpdates = Object.assign({}, s, updateData);
-            sessionWithUpdates.counts = s.counts || [];
-            sessionWithUpdates.misfeeds = s.misfeeds || [];
+            // Schema uses counts as object with {valid: [], misfeed: []}
+            if (s.counts) {
+              sessionWithUpdates.counts = s.counts;
+            }
             sessions.push(sessionWithUpdates);
           }
         }
@@ -2091,9 +2087,11 @@ class MachineSimulator {
           const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, sessionId));
           if (sessionIndex !== -1) {
             Object.assign(sessions[sessionIndex], updateData);
-            // Also sync counts and misfeeds arrays from the database session
-            sessions[sessionIndex].counts = s.counts || [];
-            sessions[sessionIndex].misfeeds = s.misfeeds || [];
+            // Also sync counts structure from the database session
+            // Schema uses counts as object with {valid: [], misfeed: []}
+            if (s.counts) {
+              sessions[sessionIndex].counts = s.counts;
+            }
           }
         }
       }
@@ -2676,9 +2674,9 @@ class MachineSimulator {
           try {
             const opSess = db.collection(config.operatorSessionCollectionName);
             if (isMisfeed) {
-              await opSess.updateOne({ _id: opSessionId }, { $push: { misfeeds: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
+              await opSess.updateOne({ _id: opSessionId }, { $push: { 'counts.misfeed': schemaAdapters.prepareDocForMongo(adaptedRecord) } });
             } else {
-              await opSess.updateOne({ _id: opSessionId }, { $push: { counts: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
+              await opSess.updateOne({ _id: opSessionId }, { $push: { 'counts.valid': schemaAdapters.prepareDocForMongo(adaptedRecord) } });
             }
             await this.recalculateOperatorSession(opSessionId);
 
@@ -2688,12 +2686,20 @@ class MachineSimulator {
               const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, opSessionId));
               if (sessionIndex !== -1) {
                 // Add the count/misfeed to the in-memory session
+                // Schema uses counts as object with {valid: [], misfeed: []}
+                if (!sessions[sessionIndex].counts) {
+                  sessions[sessionIndex].counts = { valid: [], misfeed: [] };
+                }
                 if (isMisfeed) {
-                  if (!sessions[sessionIndex].misfeeds) sessions[sessionIndex].misfeeds = [];
-                  sessions[sessionIndex].misfeeds.push(adaptedRecord);
+                  if (!Array.isArray(sessions[sessionIndex].counts.misfeed)) {
+                    sessions[sessionIndex].counts.misfeed = [];
+                  }
+                  sessions[sessionIndex].counts.misfeed.push(adaptedRecord);
                 } else {
-                  if (!sessions[sessionIndex].counts) sessions[sessionIndex].counts = [];
-                  sessions[sessionIndex].counts.push(adaptedRecord);
+                  if (!Array.isArray(sessions[sessionIndex].counts.valid)) {
+                    sessions[sessionIndex].counts.valid = [];
+                  }
+                  sessions[sessionIndex].counts.valid.push(adaptedRecord);
                 }
               }
             }
@@ -2715,9 +2721,9 @@ class MachineSimulator {
             try {
               const itemColl = db.collection(config.itemSessionCollectionName);
               if (isMisfeed) {
-                await itemColl.updateOne({ _id: itemSessId }, { $push: { misfeeds: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { 'counts.misfeed': schemaAdapters.prepareDocForMongo(adaptedRecord) } });
               } else {
-                await itemColl.updateOne({ _id: itemSessId }, { $push: { counts: schemaAdapters.prepareDocForMongo(adaptedRecord) } });
+                await itemColl.updateOne({ _id: itemSessId }, { $push: { 'counts.valid': schemaAdapters.prepareDocForMongo(adaptedRecord) } });
               }
               await this.recalculateItemSession(itemSessId);
 
@@ -2727,12 +2733,20 @@ class MachineSimulator {
                 const sessionIndex = sessions.findIndex(sess => idsEqual(sess._id, itemSessId));
                 if (sessionIndex !== -1) {
                   // Add the count/misfeed to the in-memory session
+                  // Schema uses counts as object with {valid: [], misfeed: []}
+                  if (!sessions[sessionIndex].counts) {
+                    sessions[sessionIndex].counts = { valid: [], misfeed: [] };
+                  }
                   if (isMisfeed) {
-                    if (!sessions[sessionIndex].misfeeds) sessions[sessionIndex].misfeeds = [];
-                    sessions[sessionIndex].misfeeds.push(adaptedRecord);
+                    if (!Array.isArray(sessions[sessionIndex].counts.misfeed)) {
+                      sessions[sessionIndex].counts.misfeed = [];
+                    }
+                    sessions[sessionIndex].counts.misfeed.push(adaptedRecord);
                   } else {
-                    if (!sessions[sessionIndex].counts) sessions[sessionIndex].counts = [];
-                    sessions[sessionIndex].counts.push(adaptedRecord);
+                    if (!Array.isArray(sessions[sessionIndex].counts.valid)) {
+                      sessions[sessionIndex].counts.valid = [];
+                    }
+                    sessions[sessionIndex].counts.valid.push(adaptedRecord);
                   }
                 }
               }
