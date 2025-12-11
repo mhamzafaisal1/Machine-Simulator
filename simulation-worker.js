@@ -89,16 +89,20 @@ function logWith(level, message, details) {
     logger[level](message, meta);
   }
 
-  const consoleFn = level === 'error'
-    ? console.error
-    : level === 'warn'
-      ? console.warn
-      : console.log;
+  // Only output to console in development mode (errors always logged)
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev || level === 'error') {
+    const consoleFn = level === 'error'
+      ? console.error
+      : level === 'warn'
+        ? console.warn
+        : console.log;
 
-  if (meta) {
-    consoleFn(message, meta);
-  } else {
-    consoleFn(message);
+    if (meta) {
+      consoleFn(message, meta);
+    } else {
+      consoleFn(message);
+    }
   }
 }
 
@@ -241,9 +245,11 @@ class MachineSimulator {
     this.operatorSessionIdsByStation = new Map();    // station -> ObjectId (safer for SPF)
     // Item session tracking map
     this.itemSessionIdsByItem = new Map();           // itemId -> ObjectId
+    // SPF station-to-item mapping (fixes random item bug)
+    this.itemPerStation = new Map();                 // station -> item object (for SPF machines)
     // Fault session tracking
     this.currentFaultSessionId = null;               // ObjectId for open fault session
-    
+
     // ⭐ IN-MEMORY CACHE ARRAYS (for real-time cache building without DB polling)
     this.cachedMachineSessions = [];                  // Machine sessions for today
     this.cachedFaultSessions = [];                    // Fault sessions for today
@@ -257,6 +263,7 @@ class MachineSimulator {
     this.cachedItemSessions = new Map();              // itemId -> session array for today
     this.todayStart = null;                           // Midnight today (for filtering)
     this.cacheUpdateInterval = null;                  // Recurring interval for cache updates
+    this.midnightInterval = null;                     // Recurring interval for midnight checks
 
     // ⭐ HOURLY ROLLOVER TRACKING
     this.currentHourStart = null;                     // Start of current hour (for hourly totals)
@@ -499,6 +506,8 @@ class MachineSimulator {
       const operatorSessions = operatorSessionsRaw.map(session => schemaAdapters.prepareDocFromMongo(session));
 
       // Group by operator ID
+      let skippedIncompatible = 0;
+      let skippedOldUnclosed = 0;
       for (const session of operatorSessions) {
         // ⭐ FILTER: Skip incompatible old sessions (schema-adapted format with no data)
         // These sessions have:
@@ -516,6 +525,22 @@ class MachineSimulator {
           continue; // Skip this session
         }
 
+        // ⭐ FIX: Skip old unclosed sessions (stale/abandoned sessions from previous days)
+        // These sessions started before today AND have no end timestamp
+        // They inflate totals because runtime is calculated as (now - oldStartTime)
+        // We only want:
+        //   1. Sessions that started today (regardless of end status)
+        //   2. Sessions that started before today BUT ended today or later (genuine overlap)
+        const sessionStart = session.timestamps?.start ? new Date(session.timestamps.start) : null;
+        const sessionEnd = session.timestamps?.end ? new Date(session.timestamps.end) : null;
+        const startedBeforeToday = sessionStart && sessionStart < this.todayStart;
+        const isUnclosed = !sessionEnd;
+
+        if (startedBeforeToday && isUnclosed) {
+          skippedOldUnclosed++;
+          continue; // Skip old unclosed session (likely stale/abandoned)
+        }
+
         const operatorId = session.operator?.id;
         if (operatorId && operatorId !== -1) {
           if (!this.cachedOperatorSessions.has(operatorId)) {
@@ -525,7 +550,7 @@ class MachineSimulator {
         }
       }
 
-      logInfo(`[${this.getTimestamp()}] ✅ Loaded ${operatorSessions.length} operator sessions for ${this.cachedOperatorSessions.size} operators`);
+      logInfo(`[${this.getTimestamp()}] ✅ Loaded ${operatorSessions.length} operator sessions for ${this.cachedOperatorSessions.size} operators (skipped ${skippedIncompatible} incompatible, ${skippedOldUnclosed} old unclosed)`);
 
       // 4. Load item sessions for this machine today (group by item ID)
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
@@ -537,6 +562,17 @@ class MachineSimulator {
 
       // Group by item ID
       for (const session of itemSessions) {
+        // ⭐ FIX: Skip old unclosed sessions (stale/abandoned sessions from previous days)
+        // Same logic as operator sessions - prevent runtime inflation from ancient unclosed sessions
+        const sessionStart = session.timestamps?.start ? new Date(session.timestamps.start) : null;
+        const sessionEnd = session.timestamps?.end ? new Date(session.timestamps.end) : null;
+        const startedBeforeToday = sessionStart && sessionStart < this.todayStart;
+        const isUnclosed = !sessionEnd;
+
+        if (startedBeforeToday && isUnclosed) {
+          continue; // Skip old unclosed session
+        }
+
         const itemId = session.item?.id;
         if (itemId) {
           if (!this.cachedItemSessions.has(itemId)) {
@@ -565,7 +601,7 @@ class MachineSimulator {
           }
 
           logInfo(`[${this.getTimestamp()}] 🔄 Recalculating all item sessions at boot...`);
-          recalcCount = 0;
+          let recalcCount = 0;
           for (const sessions of this.cachedItemSessions.values()) {
             for (const session of sessions) {
               await this.recalculateItemSession(session._id);
@@ -644,7 +680,7 @@ class MachineSimulator {
     logInfo(`[${this.getTimestamp()}] 🕐 Current hour starts at: ${this.currentHourStart.toISOString()}`);
 
     // Check every minute if we need to do midnight or hourly actions
-    setInterval(() => {
+    this.midnightInterval = setInterval(() => {
       const now = DateTime.now().setZone(SYSTEM_TIMEZONE);
       const hour = now.hour;
       const minute = now.minute;
@@ -690,6 +726,13 @@ class MachineSimulator {
     try {
       logInfo(`[${this.getTimestamp()}] 🛑 Performing midnight shutdown...`);
 
+      // ⭐ FIX RACE CONDITION: Stop simulation loop and clear all count timers BEFORE ending sessions
+      // This prevents count timers from firing while sessions are being closed
+      logInfo(`[${this.getTimestamp()}] 🛑 Stopping simulation loop and clearing count timers...`);
+      this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
+      this.countTimeouts.clear();
+      this.isRunning = false;
+
       // Remember if machine was running
       this.wasRunningBeforeMidnight = this.inSession;
       this.operatorsBeforeMidnight = this.currentRunningState?.operators || [];
@@ -711,7 +754,7 @@ class MachineSimulator {
         status: { code: 0, name: "Midnight Shutdown", softrolColor: "Grey" }
       };
 
-      // End all sessions
+      // End all sessions (now safe from race condition)
       if (this.currentSessionId) {
         await this.endMachineSession(shutdownState);
       }
@@ -775,6 +818,18 @@ class MachineSimulator {
       if (this.wasRunningBeforeMidnight) {
         logInfo(`[${this.getTimestamp()}] 🔄 Restarting machines that were running before midnight...`);
 
+        // ⭐ FIX: Repopulate itemPerStation for SPF machines (critical for correct item tracking after midnight)
+        if (this.isSpf() && this.currentItems && this.currentItems.length === 4) {
+          this.itemPerStation.clear();
+          const activeStations = getActiveStations(this.machineConfig);
+          for (let i = 0; i < activeStations.length && i < this.currentItems.length; i++) {
+            const station = activeStations[i];
+            const item = this.currentItems[i];
+            this.itemPerStation.set(station, item);
+            logInfo(`[${this.getTimestamp()}] 🎯 Post-midnight: SPF Station ${station} assigned item: ${item.name} (ID: ${item.number ?? item.id})`);
+          }
+        }
+
         const restartState = {
           timestamp: new Date(),
           machine: this.machineConfig,
@@ -795,7 +850,11 @@ class MachineSimulator {
         await this.startOperatorSessions(restartState);
         await this.startItemSessions(restartState);
 
-        logInfo(`[${this.getTimestamp()}] ✅ Machines restarted for new day`);
+        // ⭐ RESTART SIMULATION LOOP (fixes race condition - ensures simulation resumes after midnight)
+        this.isRunning = true;
+        this.simulationLoop(); // Don't await - let it run in background
+
+        logInfo(`[${this.getTimestamp()}] ✅ Machines and simulation loop restarted for new day`);
       }
 
       logInfo(`[${this.getTimestamp()}] 🎉 Midnight restart complete! Now running on ${newDayStart.toISOString().split('T')[0]}`);
@@ -992,6 +1051,18 @@ class MachineSimulator {
       operators: assignedOperators
     };
     logInfo(`[${this.getTimestamp()}] 👥 Assigned ${assignedOperators.length} initial operators for ${this.machineConfig.name}`);
+
+    // For SPF machines, assign one fixed item per station (fixes random item bug)
+    if (this.isSpf() && this.currentItems && this.currentItems.length === 4) {
+      this.itemPerStation.clear();
+      const activeStations = getActiveStations(this.machineConfig);
+      for (let i = 0; i < activeStations.length && i < this.currentItems.length; i++) {
+        const station = activeStations[i];
+        const item = this.currentItems[i];
+        this.itemPerStation.set(station, item);
+        logInfo(`[${this.getTimestamp()}] 🎯 SPF Station ${station} assigned item: ${item.name} (ID: ${item.number ?? item.id})`);
+      }
+    }
   }
 
   selectNextItem() {
@@ -1014,6 +1085,16 @@ class MachineSimulator {
       // Validate that we have the correct number of items for SPF
       if (this.currentItems.length !== 4) {
         logWarn(`[${this.getTimestamp()}] ⚠️ SPF machine has ${this.currentItems.length} items instead of expected 4 after item change`);
+      }
+
+      // Update station-to-item mapping when items change (fixes random item bug)
+      this.itemPerStation.clear();
+      const activeStations = getActiveStations(this.machineConfig);
+      for (let i = 0; i < activeStations.length && i < this.currentItems.length; i++) {
+        const station = activeStations[i];
+        const item = this.currentItems[i];
+        this.itemPerStation.set(station, item);
+        logInfo(`[${this.getTimestamp()}] 🎯 SPF Station ${station} reassigned item: ${item.name} (ID: ${item.number ?? item.id})`);
       }
     } else {
       this.currentItem = selectRandomItem(this.items);
@@ -1149,8 +1230,7 @@ class MachineSimulator {
             return 'Unknown';
           };
 
-          // Update our local tracking
-          currentlySimulatedIds.push(candidateOperator.id);
+          // Update our local tracking (don't modify currentlySimulatedIds - it represents CURRENT state from ticker, not future state)
           const fullName = getFullName(candidateOperator);
           assignedOperators.push({ id: candidateOperator.id, name: fullName, station, rate: candidateOperator._rate || 1 });
           logInfo(`[${this.getTimestamp()}] 👤 ${useLast ? 'Reused' : 'Assigned'} operator ${candidateOperator.id} (${fullName}) to station ${station} on machine ${machineSerial}`);
@@ -1339,7 +1419,7 @@ class MachineSimulator {
         // Skip dummy operators
         if (op.id === -1) continue;
 
-        const opDoc = {
+        const rawOpDoc = {
           timestamps: { start: runningState.timestamp },
           counts: [],
           misfeeds: [],
@@ -1359,19 +1439,25 @@ class MachineSimulator {
           totalTimeCredit: 0,
         };
 
-        // Insert operator session (raw format, not adapted)
-        const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(opDoc));
+        // ⭐ Adapt operator session to schema format (fixes schema divergence bug)
+        const adaptedOpDoc = schemaAdapters.adaptSession(rawOpDoc, {
+          sessionType: 'operator',
+          shift: schemaAdapters.createDefaultShift()
+        });
+
+        // Insert adapted operator session
+        const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(adaptedOpDoc));
         this.operatorSessionIdsByOperator.set(op.id, res.insertedId);
         this.operatorSessionIdsByStation.set(op.station, res.insertedId);
 
         logInfo(`[${this.getTimestamp()}] 👤 Started operator session ${res.insertedId} for operator ${op.id} at station ${op.station}`);
 
-        // Push session to in-memory cache array
-        opDoc._id = res.insertedId;
+        // Push adapted session to in-memory cache array
+        adaptedOpDoc._id = res.insertedId;
         if (!this.cachedOperatorSessions.has(op.id)) {
           this.cachedOperatorSessions.set(op.id, []);
         }
-        this.cachedOperatorSessions.get(op.id).push(schemaAdapters.prepareDocFromMongo(opDoc));
+        this.cachedOperatorSessions.get(op.id).push(adaptedOpDoc);
       }
       
       // ⭐ Cache update scheduled by startMachineSession, no need to call again
@@ -1406,7 +1492,7 @@ class MachineSimulator {
 
       // One item-session per item, as sessions are item-scoped
       for (const it of items) {
-        const doc = {
+        const rawItemDoc = {
           timestamps: { start: runningState.timestamp },
           counts: [],
           misfeeds: [],
@@ -1424,17 +1510,24 @@ class MachineSimulator {
           misfeedCount: 0,
           totalTimeCredit: 0
         };
-        // Insert item session (raw format, not adapted)
-        const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(doc));
+
+        // ⭐ Adapt item session to schema format (fixes schema divergence bug)
+        const adaptedItemDoc = schemaAdapters.adaptSession(rawItemDoc, {
+          sessionType: 'item',
+          shift: schemaAdapters.createDefaultShift()
+        });
+
+        // Insert adapted item session
+        const res = await coll.insertOne(schemaAdapters.prepareDocForMongo(adaptedItemDoc));
         this.itemSessionIdsByItem.set(it.id, res.insertedId);
         logInfo(`[${this.getTimestamp()}] 📦 Started item session ${res.insertedId} for item ${it.id} (${it.name})`);
 
-        // Push session to in-memory cache array
-        doc._id = res.insertedId;
+        // Push adapted session to in-memory cache array
+        adaptedItemDoc._id = res.insertedId;
         if (!this.cachedItemSessions.has(it.id)) {
           this.cachedItemSessions.set(it.id, []);
         }
-        this.cachedItemSessions.get(it.id).push(schemaAdapters.prepareDocFromMongo(doc));
+        this.cachedItemSessions.get(it.id).push(adaptedItemDoc);
       }
       
       // ⭐ Cache update scheduled by startMachineSession, no need to call again
@@ -1672,8 +1765,12 @@ class MachineSimulator {
       // Per-operator workTime == runtime (single operator)
       const workTime = runtime;
 
-      const totalCount = s.counts.length;
-      const misfeedCount = s.misfeeds.length;
+      // Handle both legacy (array) and adapted (object with valid/misfeed) count structures
+      const validCounts = Array.isArray(s.counts) ? s.counts : (s.counts?.valid || []);
+      const misfeeds = Array.isArray(s.misfeeds) ? s.misfeeds : (s.counts?.misfeed || []);
+
+      const totalCount = validCounts.length;
+      const misfeedCount = misfeeds.length;
 
       // Build arrays aligned to s.items order
       const byItem = s.items.map((it) => {
@@ -1777,7 +1874,7 @@ class MachineSimulator {
         {
           $set: {
             'timestamps.end': endState.timestamp,
-            endState: endState,
+            endState: adaptedEndState,  // Use adapted version (fixes data corruption bug)
             'states.end': adaptedEndState  // Set the end state in the states object
           }
         }
@@ -1827,8 +1924,8 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
-      // Operator sessions are not schema-adapted, so states is still a flat array
-      for (const [operatorId, opSessionId] of this.operatorSessionIdsByStation) {
+      // ⭐ FIX: Variable should be named 'station' not 'operatorId' (the Map key is station number)
+      for (const [station, opSessionId] of this.operatorSessionIdsByStation) {
         await coll.updateOne(
           { _id: opSessionId },
           {
@@ -1877,8 +1974,11 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.operatorSessionCollectionName);
 
+      const machineSerial = this.machineConfig.id || this.machineConfig.serial;
+      const serialValues = buildSerialQueryValues(machineSerial);
+
       const filter = {
-        "machine.id": this.machineConfig.id || this.machineConfig.serial,
+        "machine.id": { $in: serialValues },
         "timestamps.end": { $exists: false }
       };
 
@@ -1977,9 +2077,13 @@ class MachineSimulator {
       const activeStations = Array.isArray(s.operators) ? s.operators.length : 0;
       const workTime = runtime * activeStations;
 
+      // Handle both legacy (array) and adapted (object with valid/misfeed) count structures
+      const validCounts = Array.isArray(s.counts) ? s.counts : (s.counts?.valid || []);
+      const misfeeds = Array.isArray(s.misfeeds) ? s.misfeeds : (s.counts?.misfeed || []);
+
       const itemId = s.item?.id;
-      const totalCount = (s.counts || []).filter(c => c.item?.id === itemId).length;
-      const misfeedCount = (s.misfeeds || []).filter(m => m.item?.id === itemId).length;
+      const totalCount = validCounts.filter(c => c.item?.id === itemId).length;
+      const misfeedCount = misfeeds.filter(m => m.item?.id === itemId).length;
 
       const std = Number(s.item?.standard) || 0;
       const pph = std < 60 ? std * 60 : std;
@@ -2225,29 +2329,30 @@ class MachineSimulator {
     // Write operator-specific records to operator collections (using adapted record)
     await this.writeOperatorStateRecords(adaptedRecord);
 
-    // Update state ticker (using adapted record, query by machine.id since adapted)
-    const adaptedRecordForTicker = JSON.parse(JSON.stringify(adaptedRecord));
-    delete adaptedRecordForTicker._id;
-    delete adaptedRecordForTicker._tickerDoc; // Remove _tickerDoc from what we write (it's metadata)
+    // Update state ticker (selective field updates to preserve operator assignments and custom fields)
+    const tickerUpdate = {
+      'machine.id': adaptedRecord.machine.id,
+      'machine.name': adaptedRecord.machine.name,
+      'machine.type': adaptedRecord.machine.type,
+      'timestamp': adaptedRecord.timestamp,
+      'program': adaptedRecord.program,
+      'status': adaptedRecord.status
+    };
+
+    // Only update operators if this is a Running state (preserve existing operator assignments otherwise)
+    if (stateType === "Running" && adaptedRecord.operators) {
+      tickerUpdate['operators'] = adaptedRecord.operators;
+    }
+
     await tickerCollection.updateOne(
       { "machine.id": adaptedRecord.machine.id },  // Query by machine.id (adapted format)
-      { $set: schemaAdapters.prepareDocForMongo(adaptedRecordForTicker) },
+      { $set: schemaAdapters.prepareDocForMongo(tickerUpdate) },
       { upsert: true }
     );
 
     if (stateType === "Running") {
-      // ✅ FIX: Use operators from currentRunningState (assigned via assignOperatorsForRunningState)
-      // instead of record.operators (from buildStateRecord with modulo assignment)
-      // This ensures counts are generated for the same operators that have active operator sessions
-      const operatorsToUse = (this.currentRunningState && this.currentRunningState.operators) 
-        ? this.currentRunningState.operators 
-        : record.operators;
-      
-      // Update record.operators to match the operators we're actually using for counts
-      record.operators = operatorsToUse;
       this.currentRunningState = record;                // Keep original record (has operator.station)
-      
-      operatorsToUse.forEach((op) => {
+      record.operators.forEach((op) => {
         if (require('./utils').isValidOperatorId(op.id)) {
           this.simulateStationCounts(record, op.station, op);  // Use original record with station
         }
@@ -2418,9 +2523,15 @@ class MachineSimulator {
     this.countTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.countTimeouts.clear();
     this.isRunning = false;
-    
+
     // ⭐ Stop the cache update interval
     this.stopCacheUpdateInterval();
+
+    // ⭐ Stop the midnight rollover interval
+    if (this.midnightInterval) {
+      clearInterval(this.midnightInterval);
+      this.midnightInterval = null;
+    }
 
     const endState = {
       timestamp: new Date(),
@@ -2460,16 +2571,17 @@ class MachineSimulator {
 
   simulateStationCounts(runningState, station, operator) {
     const rateParam = operator.rate;
-    // Choose the correct item for this station
+    // Choose the correct item for this station (FIXED per station for SPF machines)
     const itemForThisStation = this.isSpf()
-      //? this.currentItems[(Math.max(1, station) - 1) % Math.max(1, this.currentItems.length || 1)]
-      ? this.currentItems[Math.floor(Math.random() * 4)]
+      ? (this.itemPerStation.get(station) || this.currentItems[0] || this.currentItem)
       : this.currentItem;
 
-    // Calculate timing based on current item
+    // Calculate timing based on current item with correct exponential distribution
     let timing = calculateItemTiming(itemForThisStation);
-    let randomExponential = Math.min(1, ((Math.log(1 - Math.random()) / (-1 * rateParam)) / 5));
-    let delayMs = ((randomExponential * (timing.highRange - timing.lowRange)) + timing.lowRange) * 1000;
+    // ⭐ FIX: Use proper exponential distribution (removed artificial /5 compression)
+    const x = -Math.log(1 - Math.random()) / rateParam;
+    const normalized = Math.min(x, 1); // Cap extreme tails
+    let delayMs = (timing.lowRange + normalized * (timing.highRange - timing.lowRange)) * 1000;
 
     const timeout = setTimeout(async () => {
       try {
@@ -2493,34 +2605,22 @@ class MachineSimulator {
         };
 
         if (!isMisfeed) {
-          // Include current item information
-          if (this.isSpf()) {
-            const randItem = this.currentItems[Math.floor(Math.random() * 4)];
-            countRecord.item = {
-              id: (randItem.number ?? randItem.id),
-              name: randItem.name,
-              standard: randItem.standard
-            };
-            timing = calculateItemTiming(itemForThisStation);
-            let randomExponential = Math.min(1, ((Math.log(1 - Math.random()) / (-1 * rateParam)) / 5));
-            delayMs = ((randomExponential * (timing.highRange - timing.lowRange)) + timing.lowRange) * 1000;
-          } else {
-            countRecord.item = {
-              id: (itemForThisStation.number ?? itemForThisStation.id),
-              name: itemForThisStation.name,
-              standard: itemForThisStation.standard
-            };
-          }
+          // Include current item information (use fixed item per station for SPF)
+          countRecord.item = {
+            id: (itemForThisStation.number ?? itemForThisStation.id),
+            name: itemForThisStation.name,
+            standard: itemForThisStation.standard
+          };
+          // Note: Timing already calculated above with correct exponential distribution
 
         } else {
           countRecord.misfeed = true;
-          // Attach item to misfeed so item-session can account for it
-          if (this.isSpf()) {
-            const it = this.currentItems[Math.floor(Math.random() * 4)];
-            countRecord.item = { id: (it.number ?? it.id), name: it.name, standard: it.standard };
-          } else {
-            countRecord.item = { id: (itemForThisStation.number ?? itemForThisStation.id), name: itemForThisStation.name, standard: itemForThisStation.standard };
-          }
+          // Attach item to misfeed so item-session can account for it (use fixed item per station for SPF)
+          countRecord.item = {
+            id: (itemForThisStation.number ?? itemForThisStation.id),
+            name: itemForThisStation.name,
+            standard: itemForThisStation.standard
+          };
         }
 
         // ⭐ PHASE 2: Adapt count/misfeed to schema format

@@ -42,8 +42,8 @@ function constructor(logMongoUri) {
         rejectionHandlers: [errorFileTransport]
     });
 
-    // In non-production, add verbose logging
-    if (process.env.NODE_ENV !== 'production') {
+    // In development mode only, add verbose logging
+    if (process.env.NODE_ENV === 'development') {
         logger.add(new winston.transports.DailyRotateFile({
             filename: path.join(logsDir, '%DATE%_everything.log'),
             level: 'silly',
