@@ -6,6 +6,15 @@
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+const devWarn = (...args) => {
+  if (isDev) console.warn(...args);
+};
+
 // Suppress "unknown format" warnings from schema imports
 const originalWarn = console.warn;
 console.warn = (...args) => {
@@ -173,12 +182,12 @@ function validate(schemaType, data, context = {}) {
       ? ` [${Object.entries(context).map(([k, v]) => `${k}=${v}`).join(', ')}]`
       : '';
 
-    console.warn(`[SCHEMA-VALIDATOR] ${schemaType} validation failed${contextStr}:`);
-    console.warn(formatErrors(validator.errors));
+    devWarn(`[SCHEMA-VALIDATOR] ${schemaType} validation failed${contextStr}:`);
+    devWarn(formatErrors(validator.errors));
 
     // Log a sample of the invalid data (first 500 chars)
     const dataSample = JSON.stringify(data, null, 2).substring(0, 500);
-    console.warn(`Sample data:\n${dataSample}${dataSample.length >= 500 ? '...' : ''}`);
+    devWarn(`Sample data:\n${dataSample}${dataSample.length >= 500 ? '...' : ''}`);
   }
 
   return false;
@@ -212,7 +221,7 @@ function resetStats() {
  * Print validation statistics summary
  */
 function printStats() {
-  console.log('\n========== SCHEMA VALIDATION STATISTICS ==========');
+  devLog('\n========== SCHEMA VALIDATION STATISTICS ==========');
 
   let totalChecks = 0;
   let totalValid = 0;
@@ -223,7 +232,7 @@ function printStats() {
       const validPercent = ((stats.valid / stats.total) * 100).toFixed(1);
       const status = stats.invalid === 0 ? '✓' : '✗';
 
-      console.log(`${status} ${type.padEnd(15)} - Total: ${stats.total}, Valid: ${stats.valid}, Invalid: ${stats.invalid} (${validPercent}% valid)`);
+      devLog(`${status} ${type.padEnd(15)} - Total: ${stats.total}, Valid: ${stats.valid}, Invalid: ${stats.invalid} (${validPercent}% valid)`);
 
       totalChecks += stats.total;
       totalValid += stats.valid;
@@ -231,11 +240,11 @@ function printStats() {
     }
   });
 
-  console.log('--------------------------------------------------');
+  devLog('--------------------------------------------------');
   const overallPercent = totalChecks > 0 ? ((totalValid / totalChecks) * 100).toFixed(1) : 0;
-  console.log(`OVERALL: ${totalChecks} checks, ${totalValid} valid, ${totalInvalid} invalid (${overallPercent}% valid)`);
-  console.log(`Unique error patterns logged: ${errorPatterns.size}`);
-  console.log('==================================================\n');
+  devLog(`OVERALL: ${totalChecks} checks, ${totalValid} valid, ${totalInvalid} invalid (${overallPercent}% valid)`);
+  devLog(`Unique error patterns logged: ${errorPatterns.size}`);
+  devLog('==================================================\n');
 }
 
 module.exports = {

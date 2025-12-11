@@ -3,6 +3,12 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { getActiveMachines, validateAllMachines } = require('./fillmore-machines');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+
 class SimulationManager {
   constructor() {
     this.workers = new Map(); // machineSerial -> child process
@@ -11,11 +17,11 @@ class SimulationManager {
 
   async startAllMachines() {
     if (this.isRunning) {
-      console.log('⚠️  Simulation manager is already running');
+      devLog('⚠️  Simulation manager is already running');
       return;
     }
 
-    console.log('🚀 Starting Fillmore Simulation Manager...');
+    devLog('🚀 Starting Fillmore Simulation Manager...');
     
     try {
       // Validate all machine configurations
@@ -23,7 +29,7 @@ class SimulationManager {
       
       // Get active machines
       const activeMachines = await getActiveMachines();
-      console.log(`📋 Found ${activeMachines.length} active machines to simulate`);
+      devLog(`📋 Found ${activeMachines.length} active machines to simulate`);
       
       // Spawn worker for each active machine
       for (const machine of activeMachines) {
@@ -33,7 +39,7 @@ class SimulationManager {
       }
       
       this.isRunning = true;
-      console.log(`✅ All ${activeMachines.length} machines started successfully!`);
+      devLog(`✅ All ${activeMachines.length} machines started successfully!`);
       
       // Log status
       this.logStatus();
@@ -49,11 +55,11 @@ class SimulationManager {
     const machineSerial = machineConfig.id || machineConfig._originalSerial || machineConfig.serial;
 
     if (this.workers.has(machineSerial)) {
-      console.log(`⚠️  Machine ${machineConfig.name} (${machineSerial}) is already running`);
+      devLog(`⚠️  Machine ${machineConfig.name} (${machineSerial}) is already running`);
       return;
     }
 
-    console.log(`🔄 Spawning worker for ${machineConfig.name} (${machineSerial})...`);
+    devLog(`🔄 Spawning worker for ${machineConfig.name} (${machineSerial})...`);
     
     try {
       // Create a temporary config file for this machine
@@ -84,17 +90,17 @@ class SimulationManager {
       });
       
       worker.on('exit', (code, signal) => {
-        console.log(`🛑 Worker for ${machineConfig.name} (${machineSerial}) exited with code ${code} (signal: ${signal})`);
+        devLog(`🛑 Worker for ${machineConfig.name} (${machineSerial}) exited with code ${code} (signal: ${signal})`);
         this.workers.delete(machineSerial);
         
         // If this was an unexpected exit and manager is still running, restart
         if (this.isRunning && code !== 0) {
-          console.log(`🔄 Restarting ${machineConfig.name} (${machineSerial})...`);
+          devLog(`🔄 Restarting ${machineConfig.name} (${machineSerial})...`);
           setTimeout(() => this.spawnMachine(machineConfig), 5000);
         }
       });
       
-      console.log(`✅ Worker spawned for ${machineConfig.name} (${machineSerial})`);
+      devLog(`✅ Worker spawned for ${machineConfig.name} (${machineSerial})`);
       
     } catch (error) {
       console.error(`❌ Failed to spawn worker for ${machineConfig.name} (${machineSerial}):`, error.message);
@@ -106,11 +112,11 @@ class SimulationManager {
     const worker = this.workers.get(machineSerial);
     
     if (!worker) {
-      console.log(`⚠️  Machine ${machineSerial} is not running`);
+      devLog(`⚠️  Machine ${machineSerial} is not running`);
       return;
     }
 
-    console.log(`🛑 Stopping machine ${worker.config.name} (${machineSerial})...`);
+    devLog(`🛑 Stopping machine ${worker.config.name} (${machineSerial})...`);
     
     try {
       worker.process.kill('SIGTERM');
@@ -118,7 +124,7 @@ class SimulationManager {
       // Wait for graceful shutdown
       await new Promise((resolve) => {
         const timeout = setTimeout(() => {
-          console.log(`⚠️  Force killing machine ${worker.config.name} (${machineSerial})...`);
+          devLog(`⚠️  Force killing machine ${worker.config.name} (${machineSerial})...`);
           worker.process.kill('SIGKILL');
           resolve();
         }, 5000);
@@ -130,7 +136,7 @@ class SimulationManager {
       });
       
       this.workers.delete(machineSerial);
-      console.log(`✅ Machine ${worker.config.name} (${machineSerial}) stopped`);
+      devLog(`✅ Machine ${worker.config.name} (${machineSerial}) stopped`);
       
     } catch (error) {
       console.error(`❌ Error stopping machine ${machineSerial}:`, error.message);
@@ -139,17 +145,17 @@ class SimulationManager {
 
   async stopAllMachines() {
     if (!this.isRunning) {
-      console.log('⚠️  Simulation manager is not running');
+      devLog('⚠️  Simulation manager is not running');
       return;
     }
 
-    console.log('🛑 Stopping all machines...');
+    devLog('🛑 Stopping all machines...');
     
     const stopPromises = Array.from(this.workers.keys()).map(serial => this.stopMachine(serial));
     await Promise.all(stopPromises);
     
     this.isRunning = false;
-    console.log('✅ All machines stopped');
+    devLog('✅ All machines stopped');
   }
 
   getStatus() {
@@ -175,15 +181,15 @@ class SimulationManager {
 
   logStatus() {
     const status = this.getStatus();
-    console.log('\n📊 Simulation Manager Status:');
-    console.log(`   Running: ${status.isRunning ? '✅ Yes' : '❌ No'}`);
-    console.log(`   Active Workers: ${status.totalWorkers}`);
+    devLog('\n📊 Simulation Manager Status:');
+    devLog(`   Running: ${status.isRunning ? '✅ Yes' : '❌ No'}`);
+    devLog(`   Active Workers: ${status.totalWorkers}`);
     
     if (status.workers.length > 0) {
-      console.log('\n🏭 Active Machines:');
+      devLog('\n🏭 Active Machines:');
       status.workers.forEach(worker => {
         const uptimeMinutes = Math.floor(worker.uptime / 60000);
-        console.log(`   ${worker.name} (${worker.type}) - Serial: ${worker.serial} - Uptime: ${uptimeMinutes}m`);
+        devLog(`   ${worker.name} (${worker.type}) - Serial: ${worker.serial} - Uptime: ${uptimeMinutes}m`);
       });
     }
   }
@@ -208,13 +214,13 @@ if (require.main === module) {
   
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
-    console.log('\n🛑 Received SIGINT, stopping all machines...');
+    devLog('\n🛑 Received SIGINT, stopping all machines...');
     await manager.stopAllMachines();
     process.exit(0);
   });
   
   process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received SIGTERM, stopping all machines...');
+    devLog('\n🛑 Received SIGTERM, stopping all machines...');
     await manager.stopAllMachines();
     process.exit(0);
   });

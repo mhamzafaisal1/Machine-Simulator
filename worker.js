@@ -4,29 +4,38 @@ const { MongoClient } = require('mongodb');
 const config = require('./config');
 const { getRandomDelay, buildStateRecord, getStationOperators, getActiveStations, getOperatorName } = require('./utils');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+const devWarn = (...args) => {
+  if (isDev) console.warn(...args);
+};
+
 async function runSimulator() {
-  console.log(`[${new Date().toISOString()}] Starting machine simulator...`);
-  console.log(`[${new Date().toISOString()}] Connecting to MongoDB: ${config.mongoUri}`);
-  console.log(`[${new Date().toISOString()}] Database: ${config.dbName}, Collections: ${config.collectionName}, ${config.countCollectionName}`);
+  devLog(`[${new Date().toISOString()}] Starting machine simulator...`);
+  devLog(`[${new Date().toISOString()}] Connecting to MongoDB: ${config.mongoUri}`);
+  devLog(`[${new Date().toISOString()}] Database: ${config.dbName}, Collections: ${config.collectionName}, ${config.countCollectionName}`);
   
   const client = new MongoClient(config.mongoUri);
   let faultArray = [];
   
   try {
     await client.connect();
-    console.log(`[${new Date().toISOString()}] ✅ Successfully connected to MongoDB`);
+    devLog(`[${new Date().toISOString()}] ✅ Successfully connected to MongoDB`);
     
     const db = client.db(config.dbName);
     const stateCollection = db.collection(config.collectionName);
     const countCollection = db.collection(config.countCollectionName);
     // Load all faults into array, sorted by code
     faultArray = await db.collection('fault').find({}).sort({ code: 1 }).toArray();
-    console.log(`[${new Date().toISOString()}] ⚡ Loaded ${faultArray.length} faults from fault collection`);
+    devLog(`[${new Date().toISOString()}] ⚡ Loaded ${faultArray.length} faults from fault collection`);
     
     const stateStats = await db.command({ collStats: config.collectionName });
     const countStats = await db.command({ collStats: config.countCollectionName });
-    console.log(`[${new Date().toISOString()}] 📊 State collection: ${stateStats.count} documents`);
-    console.log(`[${new Date().toISOString()}] 📊 Count collection: ${countStats.count} documents`);
+    devLog(`[${new Date().toISOString()}] 📊 State collection: ${stateStats.count} documents`);
+    devLog(`[${new Date().toISOString()}] 📊 Count collection: ${countStats.count} documents`);
     
     // Variables to track count timeouts for each station
     const countTimeouts = new Map();
@@ -231,7 +240,7 @@ async function runSimulator() {
         if (stateType === "Timeout" || stateType === "Fault") {
           countTimeouts.forEach((timeout, station) => {
             clearTimeout(timeout);
-            console.log(`[${new Date().toISOString()}] 🛑 Stopped count generation for station ${station} (${stateType} state)`);
+            devLog(`[${new Date().toISOString()}] 🛑 Stopped count generation for station ${station} (${stateType} state)`);
           });
           countTimeouts.clear();
           currentRunningState = null;
@@ -246,7 +255,7 @@ async function runSimulator() {
     
         if (stateType === "Running") {
           const assignedOperators = await assignOperatorsForRunningState(db);
-          console.log(`[${new Date().toISOString()}] ✅ Assigned operators: ${assignedOperators}`);
+          devLog(`[${new Date().toISOString()}] ✅ Assigned operators: ${assignedOperators}`);
           record = {
             timestamp: now,
             machine: {
@@ -321,7 +330,7 @@ async function runSimulator() {
 
         // Upsert into stateTicker (remove _id)
         const tickerRecord = JSON.parse(JSON.stringify(record));
-        console.log(`[${new Date().toISOString()}] ✅ Ticker record: ${tickerRecord}`);
+        devLog(`[${new Date().toISOString()}] ✅ Ticker record: ${tickerRecord}`);
         delete tickerRecord['_id'];
     
         const stateTickerCollection = db.collection('stateTicker');
@@ -332,16 +341,16 @@ async function runSimulator() {
         );
     
         // Logging
-        console.log(`[${now.toISOString()}] ✅ Inserted ${stateType} state`);
-        console.log(`   📝 Document ID: ${result.insertedId}`);
-        console.log(`   🕐 Timestamp: ${now.toISOString()}`);
-        console.log(`   🔧 Machine: ${record.machine.name} (${record.machine.serial}) - Type: ${config.machine.type}`);
-        console.log(`   📊 Status: ${record.status.name} (Code: ${record.status.code})`);
-        console.log(`   🏭 Active Stations: ${activeStations.join(', ')} (Lanes: ${config.machine.lanes})`);
-        console.log(`   📈 StateTicker: ${upsertResult.upsertedCount > 0 ? 'Created' : 'Updated'} latest state`);
+        devLog(`[${now.toISOString()}] ✅ Inserted ${stateType} state`);
+        devLog(`   📝 Document ID: ${result.insertedId}`);
+        devLog(`   🕐 Timestamp: ${now.toISOString()}`);
+        devLog(`   🔧 Machine: ${record.machine.name} (${record.machine.serial}) - Type: ${config.machine.type}`);
+        devLog(`   📊 Status: ${record.status.name} (Code: ${record.status.code})`);
+        devLog(`   🏭 Active Stations: ${activeStations.join(', ')} (Lanes: ${config.machine.lanes})`);
+        devLog(`   📈 StateTicker: ${upsertResult.upsertedCount > 0 ? 'Created' : 'Updated'} latest state`);
         const updatedStats = await db.command({ collStats: config.collectionName });
-        console.log(`   📈 Total documents in state collection: ${updatedStats.count}`);
-        console.log('   ──────────────────────────────────────────────');
+        devLog(`   📈 Total documents in state collection: ${updatedStats.count}`);
+        devLog('   ──────────────────────────────────────────────');
     
         // Begin count generation
         if (stateType === "Running") {
@@ -392,17 +401,17 @@ async function runSimulator() {
               name: "None Entered",
               standard: 666
             };
-            console.log(`[${new Date().toISOString()}] ✅ Count inserted for station ${station}`);
-            console.log(`   📦 Item ID: ${itemId}`);
-            console.log(`   👤 Operator: ${operatorName} (${operator.id})`);
-            console.log(`   🔧 Machine: ${runningState.machine.name}`);
-            console.log(`   🏭 Station: ${station}, Lane: ${station}`);
+            devLog(`[${new Date().toISOString()}] ✅ Count inserted for station ${station}`);
+            devLog(`   📦 Item ID: ${itemId}`);
+            devLog(`   👤 Operator: ${operatorName} (${operator.id})`);
+            devLog(`   🔧 Machine: ${runningState.machine.name}`);
+            devLog(`   🏭 Station: ${station}, Lane: ${station}`);
           } else {
             countRecord.misfeed = true;
-            console.log(`[${new Date().toISOString()}] ⚠️ MISFEED recorded at station ${station}`);
-            console.log(`   👤 Operator: ${operatorName} (${operator.id})`);
-            console.log(`   🔧 Machine: ${runningState.machine.name}`);
-            console.log(`   🏭 Station: ${station}, Lane: ${station}`);
+            devLog(`[${new Date().toISOString()}] ⚠️ MISFEED recorded at station ${station}`);
+            devLog(`   👤 Operator: ${operatorName} (${operator.id})`);
+            devLog(`   🔧 Machine: ${runningState.machine.name}`);
+            devLog(`   🏭 Station: ${station}, Lane: ${station}`);
           }
     
           await collection.insertOne(countRecord);
@@ -413,8 +422,8 @@ async function runSimulator() {
         await db.collection(config.countMonthlyCollectionName).insertOne(countRecord);
 
           const updatedStats = await db.command({ collStats: config.countCollectionName });
-          console.log(`   📈 Total documents in count collection: ${updatedStats.count}`);
-          console.log('   ──────────────────────────────────────────────');
+          devLog(`   📈 Total documents in count collection: ${updatedStats.count}`);
+          devLog('   ──────────────────────────────────────────────');
     
           // Continue count generation for this station if still running
           if (countTimeouts.has(station)) {
@@ -427,29 +436,29 @@ async function runSimulator() {
     
       // Store timeout reference for this station
       countTimeouts.set(station, timeout);
-      console.log(`[${new Date().toISOString()}] ⏰ Next count for station ${station} in ${delayMs / 1000} seconds`);
+      devLog(`[${new Date().toISOString()}] ⏰ Next count for station ${station} in ${delayMs / 1000} seconds`);
     }
     
     async function simulationLoop() {
-      console.log(`[${new Date().toISOString()}] 🚀 Starting simulation loop...`);
+      devLog(`[${new Date().toISOString()}] 🚀 Starting simulation loop...`);
       const activeStations = getActiveStations();
-      console.log(`[${new Date().toISOString()}] 🏭 Simulating machine type: ${config.machine.type} with active stations: ${activeStations.join(', ')}`);
+      devLog(`[${new Date().toISOString()}] 🏭 Simulating machine type: ${config.machine.type} with active stations: ${activeStations.join(', ')}`);
       
       while (true) {
         await writeState("Timeout");
         const timeoutDelay = getRandomDelay(1, 5);
-        console.log(`[${new Date().toISOString()}] ⏰ Waiting ${timeoutDelay/1000/60} minutes before Running state...`);
+        devLog(`[${new Date().toISOString()}] ⏰ Waiting ${timeoutDelay/1000/60} minutes before Running state...`);
         await delay(timeoutDelay);
 
         await writeState("Running");
         const runningDelay = getRandomDelay(2, 90);
-        console.log(`[${new Date().toISOString()}] ⏰ Waiting ${runningDelay/1000/60} minutes before next state...`);
+        devLog(`[${new Date().toISOString()}] ⏰ Waiting ${runningDelay/1000/60} minutes before next state...`);
         await delay(runningDelay);
 
         const nextState = Math.random() < 0.5 ? "Timeout" : "Fault";
         await writeState(nextState);
         const finalDelay = getRandomDelay(1, 5);
-        console.log(`[${new Date().toISOString()}] ⏰ Waiting ${finalDelay/1000/60} minutes before next cycle...`);
+        devLog(`[${new Date().toISOString()}] ⏰ Waiting ${finalDelay/1000/60} minutes before next cycle...`);
         await delay(finalDelay);
       }
     }
@@ -468,12 +477,12 @@ function delay(ms) {
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {
-  console.log(`[${new Date().toISOString()}] 🛑 Received SIGINT, shutting down gracefully...`);
+  devLog(`[${new Date().toISOString()}] 🛑 Received SIGINT, shutting down gracefully...`);
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.log(`[${new Date().toISOString()}] 🛑 Received SIGTERM, shutting down gracefully...`);
+  devLog(`[${new Date().toISOString()}] 🛑 Received SIGTERM, shutting down gracefully...`);
   process.exit(0);
 });
 
