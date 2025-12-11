@@ -26,9 +26,11 @@ function buildLoggingConnectionString() {
     const encodedLogPassword = encodeURIComponent(logPassword);
     
     let loggerConnectionString;
+    const url = config.mongoLog.url;
     
-    if (config.mongoLog.url.startsWith('mongodb://')) {
-        const urlWithoutScheme = config.mongoLog.url.substring(10);
+    // ✅ FIX: Properly handle both mongodb:// and mongodb+srv:// URLs
+    if (url.startsWith('mongodb://')) {
+        const urlWithoutScheme = url.substring(10);
         const slashIndex = urlWithoutScheme.indexOf('/');
         
         if (slashIndex === -1) {
@@ -38,8 +40,32 @@ function buildLoggingConnectionString() {
             // Database specified in URL
             loggerConnectionString = `mongodb://${encodedLogUsername}:${encodedLogPassword}@${urlWithoutScheme}?authSource=${logAuthSource}`;
         }
+    } else if (url.startsWith('mongodb+srv://')) {
+        // ✅ FIX: Handle mongodb+srv:// URLs properly
+        const urlWithoutScheme = url.substring(14); // 'mongodb+srv://' is 14 chars
+        const slashIndex = urlWithoutScheme.indexOf('/');
+        const questionIndex = urlWithoutScheme.indexOf('?');
+        
+        // Extract host part (everything before / or ?)
+        const hostEnd = slashIndex !== -1 ? slashIndex : (questionIndex !== -1 ? questionIndex : urlWithoutScheme.length);
+        const hostPart = urlWithoutScheme.substring(0, hostEnd);
+        const restPart = urlWithoutScheme.substring(hostEnd);
+        
+        // Build connection string with credentials
+        loggerConnectionString = `mongodb+srv://${encodedLogUsername}:${encodedLogPassword}@${hostPart}${restPart}`;
+        
+        // Add authSource parameter
+        if (questionIndex === -1) {
+            // No existing query params
+            loggerConnectionString += `?authSource=${logAuthSource}`;
+        } else {
+            // Query params exist, append authSource
+            loggerConnectionString += `&authSource=${logAuthSource}`;
+        }
     } else {
-        loggerConnectionString = config.mongoLog.url.replace('mongodb://', `mongodb://${encodedLogUsername}:${encodedLogPassword}@`);
+        // Fallback: try to inject credentials using string replacement
+        // This handles edge cases but may not work for all URL formats
+        loggerConnectionString = url.replace(/^(mongodb\+?srv?:\/\/)/, `$1${encodedLogUsername}:${encodedLogPassword}@`);
         // Add authSource
         if (!loggerConnectionString.includes('?')) {
             loggerConnectionString += `?authSource=${logAuthSource}`;
@@ -875,15 +901,17 @@ function buildItemDailyTotal({ itemId, itemName, itemStandard, machineSerial, it
     // Ensure dateObj stores UTC midnight for the local date (timezone-aware conversion)
     const dateObj = DateTime.fromISO(dateStr, { zone: SYSTEM_TIMEZONE }).toUTC().startOf('day').toJSDate();
 
+    // ✅ FIX: Include machineSerial in _id to prevent overwrites across machines
+    // Each machine creates its own record, then we aggregate in the query
     return {
-      _id: `item-${itemId}-${dateStr}`,
+      _id: `item-${itemId}-${machineSerial}-${dateStr}`,
       entityType: 'item',
       itemId: itemId,
       itemName: itemName || `Item ${itemId}`,
       date: dateStr,
       dateObj: dateObj,
       
-      // These fields will be atomically incremented across all machines
+      // Per-machine totals (aggregated in queries across all machines)
       runtimeMs: runtimeMs,
       workedTimeMs: workedTimeMs,
       totalTimeCreditMs: timeCreditMs,

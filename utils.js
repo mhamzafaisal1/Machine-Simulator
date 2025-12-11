@@ -1,6 +1,15 @@
 // utils.js
 const config = require('./config');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+const devWarn = (...args) => {
+  if (isDev) console.warn(...args);
+};
+
 function getRandomDelay(minMinutes, maxMinutes) {
   return (Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) + minMinutes) * 60 * 1000;
 }
@@ -116,7 +125,7 @@ async function getStationOperators(db, machineConfig = null) {
           id: operator.code,
           station: station
         });
-        console.log(`[${new Date().toISOString()}] 👤 Assigned operator ${operator.code} to lane ${station} (station ${station})`);
+        devLog(`[${new Date().toISOString()}] 👤 Assigned operator ${operator.code} to lane ${station} (station ${station})`);
       } else {
         // Inactive station - assign -1 (no operator)
         operators.push({
@@ -150,7 +159,7 @@ async function getStationOperators(db, machineConfig = null) {
 // DEPRECATED: This function is no longer used since items are loaded from MongoDB
 // Keeping for backward compatibility but should not be used
 function getRandomItemPerStation(machineConfig = null) {
-  console.warn(`[${new Date().toISOString()}] ⚠️ getRandomItemPerStation() is deprecated. Items are now loaded from MongoDB.`);
+  devWarn(`[${new Date().toISOString()}] ⚠️ getRandomItemPerStation() is deprecated. Items are now loaded from MongoDB.`);
   // Return a fallback structure for backward compatibility
   const items = [{ id: 26, count: 0 }]; // Default fallback item as array, not object
   return items;
@@ -166,13 +175,13 @@ async function loadItems(db) {
     const validItems = items.filter(item => {
       // Check required fields
       if (!item.number || !item.name || item.standard === undefined) {
-        console.warn(`[${new Date().toISOString()}] ⚠️ Skipping item with missing required fields:`, item);
+        devWarn(`[${new Date().toISOString()}] ⚠️ Skipping item with missing required fields:`, item);
         return false;
       }
 
       // Validate standard field
       if (typeof item.standard !== 'number' || !isFinite(item.standard) || item.standard <= 0) {
-        console.warn(`[${new Date().toISOString()}] ⚠️ Skipping item with invalid standard value:`, item);
+        devWarn(`[${new Date().toISOString()}] ⚠️ Skipping item with invalid standard value:`, item);
         return false;
       }
 
@@ -187,7 +196,7 @@ async function loadItems(db) {
     const schemaAdapters = require('./schema-adapters');
     const adaptedItems = validItems.map(item => schemaAdapters.adaptItemFromDB(item));
 
-    console.log(`[${new Date().toISOString()}] ✅ Loaded ${adaptedItems.length} valid items from database`);
+    devLog(`[${new Date().toISOString()}] ✅ Loaded ${adaptedItems.length} valid items from database`);
     return adaptedItems;
   } catch (error) {
     console.error(`[${new Date().toISOString()}] ❌ Error loading items from MongoDB:`, error.message);
@@ -204,7 +213,7 @@ function selectRandomItem(items) {
   const randomIndex = Math.floor(Math.random() * items.length);
   const selectedItem = items[randomIndex];
   
-  console.log(`[${new Date().toISOString()}] 🎯 Selected item: ${selectedItem.name} (ID: ${selectedItem.number}, Standard: ${selectedItem.standard})`);
+  devLog(`[${new Date().toISOString()}] 🎯 Selected item: ${selectedItem.name} (ID: ${selectedItem.number}, Standard: ${selectedItem.standard})`);
   return selectedItem;
 }
 
@@ -213,7 +222,7 @@ function shouldChangeItem() {
   const randomValue = Math.random() * 100;
   const shouldChange = randomValue >= 95; // 5% chance to change item
   
-  console.log(`[${new Date().toISOString()}] 🎲 Item change roll: ${randomValue.toFixed(2)} - ${shouldChange ? 'Changing item' : 'Keeping same item'}`);
+  devLog(`[${new Date().toISOString()}] 🎲 Item change roll: ${randomValue.toFixed(2)} - ${shouldChange ? 'Changing item' : 'Keeping same item'}`);
   return shouldChange;
 }
 

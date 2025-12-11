@@ -4,6 +4,12 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
+// Helper for conditional logging (only in development mode)
+const isDev = process.env.NODE_ENV === 'development';
+const devLog = (...args) => {
+  if (isDev) console.log(...args);
+};
+
 // Parse command line arguments
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -106,16 +112,17 @@ module.exports = {
 `;
 
   fs.writeFileSync(configPath, configContent);
-  console.log(`✅ Updated config.js with machine configuration:`);
-  console.log(`   Serial: ${cliConfig.serial}`);
-  console.log(`   Type: ${cliConfig.type}`);
-  console.log(`   Name: ${machineName}`);
-  console.log(`   Lanes: ${machineType.lanes}`);
-  console.log(`   IP: ${ipAddress}`);
+  devLog(`✅ Updated config.js with machine configuration:`);
+  devLog(`   Serial: ${cliConfig.serial}`);
+  devLog(`   Type: ${cliConfig.type}`);
+  devLog(`   Name: ${machineName}`);
+  devLog(`   Lanes: ${machineType.lanes}`);
+  devLog(`   IP: ${ipAddress}`);
 }
 
 // Show help
 function showHelp() {
+  // Help should always be shown
   console.log(`
 🤖 Multi-Station Machine Simulator CLI
 
@@ -167,7 +174,7 @@ function main() {
   updateConfig(cliConfig);
   
   // Start the simulator
-  console.log(`\n🚀 Starting simulator for ${cliConfig.type} machine (Serial: ${cliConfig.serial})...`);
+  devLog(`\n🚀 Starting simulator for ${cliConfig.type} machine (Serial: ${cliConfig.serial})...`);
   
   const workerPath = path.join(__dirname, 'worker.js');
   const worker = spawn('node', [workerPath], {
@@ -181,18 +188,18 @@ function main() {
   });
   
   worker.on('exit', (code) => {
-    console.log(`\n🛑 Simulator stopped with code: ${code}`);
+    devLog(`\n🛑 Simulator stopped with code: ${code}`);
     process.exit(code);
   });
   
   // Handle graceful shutdown
   process.on('SIGINT', () => {
-    console.log(`\n🛑 Received SIGINT, stopping simulator...`);
+    devLog(`\n🛑 Received SIGINT, stopping simulator...`);
     worker.kill('SIGINT');
   });
   
   process.on('SIGTERM', () => {
-    console.log(`\n🛑 Received SIGTERM, stopping simulator...`);
+    devLog(`\n🛑 Received SIGTERM, stopping simulator...`);
     worker.kill('SIGTERM');
   });
 }
