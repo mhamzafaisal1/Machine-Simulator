@@ -1,5 +1,5 @@
 require('dotenv').config();
- 
+
 // config.js - Auto-generated from CLI arguments with environment variables
 module.exports = {
     // MongoDB connection settings (centralized)
@@ -15,38 +15,38 @@ module.exports = {
     itemCollectionName: 'item',
     stateTickerCollectionName: 'stateTicker',
     simulatedOperatorsTickerCollectionName: 'simulated-operators-ticker',
-   
+    
     // Machine session tracking collection
     machineSessionCollectionName: 'machine-session',
-   
+    
     // Operator session tracking collection
     operatorSessionCollectionName: 'operator-session',
-   
+    
     // Item session tracking collection
     itemSessionCollectionName: 'item-session',
-   
+    
     // Fault session tracking collection
     faultSessionCollectionName: 'fault-session',
-   
+    
         // Additional collections for state data (same data, multiple collections)
     stateMachineDailyCollectionName: 'state-machine-daily',
     stateMachineWeeklyCollectionName: 'state-machine-weekly',
     stateMachineMonthlyCollectionName: 'state-machine-monthly',
- 
+
     // Additional collections for operator state data (one record per operator)
     stateOperatorCollectionName: 'state-operator',
     stateOperatorDailyCollectionName: 'state-operator-daily',
     stateOperatorWeeklyCollectionName: 'state-operator-weekly',
     stateOperatorMonthlyCollectionName: 'state-operator-monthly',
- 
+
     // Additional collections for count data (same data, multiple collections)
     countDailyCollectionName: 'count-daily',
     countWeeklyCollectionName: 'count-weekly',
     countMonthlyCollectionName: 'count-monthly',
-   
+    
     // Cache configuration
     cacheUpdateIntervalSeconds: 30, // How often to update cache (in seconds)
- 
+  
     // Machine data from CLI arguments
     machine: {
       serial: 67798,
@@ -56,7 +56,7 @@ module.exports = {
       lanes: 3, // Determined by machine type
       type: 'LPL' // Machine type from CLI
     },
- 
+  
     // Note: Operators are now fetched from MongoDB 'operator' collection
     // Items are now fetched from MongoDB 'item' collection
     // No longer using hardcoded operator pool or item IDs
