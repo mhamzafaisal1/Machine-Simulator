@@ -1628,19 +1628,11 @@ class MachineSimulator {
           }
         }
 
-        // ✅ FIX: Track processed items to prevent duplicate counting when sessionItems has duplicates
-        const processedItems = new Set();
+        // ✅ FIX: Track processed items to prevent duplicate time credit accumulation
+        const processedItemTimeCredits = new Set();
 
         // Calculate totals and time credits for each item in the session items array
         for (const item of sessionItems) {
-          // If this item ID was already processed, push 0 to avoid double-counting
-          if (processedItems.has(item.id)) {
-            totalByItem.push(0);
-            timeCreditByItem.push(0);
-            continue;
-          }
-
-          processedItems.add(item.id);
           const countTotal = itemTypeCounts[item.id] || 0;
           const pph = normalizePPH(item.standard);
 
@@ -1649,7 +1641,12 @@ class MachineSimulator {
           if (pph > 0) {
             const itemTimeCredit = countTotal / (pph / 3600);
             timeCreditByItem.push(itemTimeCredit);
-            totalTimeCredit += itemTimeCredit;
+
+            // Only add to totalTimeCredit once per unique item ID
+            if (!processedItemTimeCredits.has(item.id)) {
+              totalTimeCredit += itemTimeCredit;
+              processedItemTimeCredits.add(item.id);
+            }
           } else {
             timeCreditByItem.push(0);
           }
@@ -1776,16 +1773,7 @@ class MachineSimulator {
       const misfeedCount = misfeeds.length;
 
       // Build arrays aligned to s.items order
-      // ✅ FIX: Track counted items to prevent duplicate counting when items array has duplicates
-      const countedItems = new Set();
-
       const byItem = s.items.map((it) => {
-        // If this item ID was already counted, return 0 to avoid double-counting
-        if (countedItems.has(it.id)) {
-          return { countTotal: 0, tci: 0 };
-        }
-
-        countedItems.add(it.id);
         const countTotal = s.counts.reduce((acc, c) => acc + (c.item?.id === it.id ? 1 : 0), 0);
         const pph = this.normalizePPH(Number(it.standard) || 0);
         const tci = pph > 0 ? countTotal / (pph / 3600) : 0;
@@ -1794,7 +1782,15 @@ class MachineSimulator {
 
       const totalCountByItem = byItem.map(x => x.countTotal);
       const timeCreditByItem = byItem.map(x => Number(x.tci.toFixed(2)));
-      const totalTimeCredit = Number(byItem.reduce((a, x) => a + x.tci, 0).toFixed(2));
+
+      // ✅ FIX: Calculate totalTimeCredit from unique items only to prevent duplicate counting
+      const uniqueItemTimeCredits = new Map();
+      s.items.forEach((it, idx) => {
+        if (!uniqueItemTimeCredits.has(it.id)) {
+          uniqueItemTimeCredits.set(it.id, byItem[idx].tci);
+        }
+      });
+      const totalTimeCredit = Number(Array.from(uniqueItemTimeCredits.values()).reduce((a, x) => a + x, 0).toFixed(2));
 
       const updateData = {
         runtime: Math.round(runtime),
