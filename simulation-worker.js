@@ -15,7 +15,8 @@ const {
 } = require('./utils');
 const config = require('./config');
 const {
-  recalculateAndUpdateCache
+  recalculateAndUpdateCache,
+  recalculateAndUpdateHourlyCache
 } = require('./simulator-cache-builder');
 const schemaValidator = require('./schema-validator');
 const schemaAdapters = require('./schema-adapters');
@@ -92,6 +93,29 @@ class MachineSimulator {
         console.warn(`[${this.getTimestamp()}] ⚠️ SPF currentItems array has ${this.currentItems.length} items, expected 4. Rebuilding.`);
         this.currentItems = [this.currentItem, this.currentItem, this.currentItem, this.currentItem];
       }
+    }
+  }
+
+  // Helper method to build update operation that works with both old and new session formats
+  async buildSessionEndUpdate(collection, sessionId, endState) {
+    const session = await collection.findOne({ _id: sessionId });
+    if (!session) return null;
+
+    // Check if states is an array (old format) or object (new format)
+    const isOldFormat = Array.isArray(session.states);
+
+    if (isOldFormat) {
+      // Old format: states is array, just push to it
+      return {
+        $set: { 'timestamps.end': endState.timestamp },
+        $push: { 'states': endState }
+      };
+    } else {
+      // New format: states is object with {start, array, end}
+      return {
+        $set: { 'timestamps.end': endState.timestamp, 'states.end': endState },
+        $push: { 'states.array': endState }
+      };
     }
   }
 
@@ -243,13 +267,15 @@ class MachineSimulator {
       const SYSTEM_TIMEZONE = 'America/Chicago';
       this.todayStart = DateTime.now().setZone(SYSTEM_TIMEZONE).startOf('day').toJSDate();
       const now = new Date();
-      
+
       console.log(`[${this.getTimestamp()}] 🕐 Today starts at: ${this.todayStart.toISOString()}`);
-      
+
       // 1. Load machine sessions for this machine today
+      // IMPORTANT: Filter by timestamps.create to only get sessions CREATED today (not old sessions)
       const machineSessionColl = db.collection(config.machineSessionCollectionName);
       this.cachedMachineSessions = await machineSessionColl.find({
         'machine.id': machineSerial,  // In this system, machine.id is the serial number
+        'timestamps.create': { $gte: this.todayStart },  // Changed from 'start' to 'create'
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -259,6 +285,7 @@ class MachineSimulator {
       const faultSessionColl = db.collection(config.faultSessionCollectionName);
       this.cachedFaultSessions = await faultSessionColl.find({
         'machine.id': machineSerial,  // In this system, machine.id is the serial number
+        'timestamps.create': { $gte: this.todayStart },  // Changed from 'start' to 'create'
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -268,6 +295,7 @@ class MachineSimulator {
       const operatorSessionColl = db.collection(config.operatorSessionCollectionName);
       const operatorSessions = await operatorSessionColl.find({
         'counts.machine.id': machineSerial,  // Operator sessions have machine info nested in counts array
+        'timestamps.create': { $gte: this.todayStart },
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -288,6 +316,7 @@ class MachineSimulator {
       const itemSessionColl = db.collection(config.itemSessionCollectionName);
       const itemSessions = await itemSessionColl.find({
         'machine.id': machineSerial,  // In this system, machine.id is the serial number
+        'timestamps.create': { $gte: this.todayStart },
         'timestamps.start': { $gte: this.todayStart }
       }).sort({ 'timestamps.start': 1 }).toArray();
       
@@ -354,6 +383,46 @@ class MachineSimulator {
   }
 
   /**
+   * ⭐ Recalculates and updates hourly cache totals using in-memory session data
+   * ✅ FIX: Now builds totals for ALL hours from todayStart to now (not just current hour)
+   */
+  async recalculateHourlyCacheTotals() {
+    try {
+      if (!this.todayStart) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ todayStart not set, skipping hourly cache recalculation`);
+        return;
+      }
+
+      const db = this.client.db(this.dbName);
+      const now = new Date();
+      
+      // ✅ Pass todayStart instead of currentHourStart to build ALL hourly totals
+      // Recalculate and update hourly cache using in-memory session arrays
+      const result = await recalculateAndUpdateHourlyCache({
+        db,
+        machineSerial: this.machineConfig.id || this.machineConfig.serial,
+        machineName: this.machineConfig.name,
+        machineSessions: this.cachedMachineSessions,
+        faultSessions: this.cachedFaultSessions,
+        operatorSessionsMap: this.cachedOperatorSessions,
+        itemSessionsMap: this.cachedItemSessions,
+        todayStart: this.todayStart,
+        queryEnd: now
+      });
+      
+      if (result.success) {
+        console.log(`[${this.getTimestamp()}] 📊 Hourly cache updated: ${result.recordsUpdated} records across ${result.hoursProcessed} hours`);
+      } else {
+        console.error(`[${this.getTimestamp()}] ❌ Hourly cache update failed: ${result.error}`);
+      }
+      
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error recalculating hourly cache totals:`, error);
+      // Don't throw - cache updates are non-critical
+    }
+  }
+
+  /**
    * ⭐ Starts the recurring cache update interval
    * Cache updates run automatically every N seconds based on config
    */
@@ -370,6 +439,7 @@ class MachineSimulator {
     // Set recurring interval
     this.cacheUpdateInterval = setInterval(async () => {
       await this.recalculateDailyCacheTotals();
+      await this.recalculateHourlyCacheTotals();
     }, intervalMs);
   }
 
@@ -661,7 +731,11 @@ class MachineSimulator {
         },
         counts: [],
         misfeeds: [],
-        states: [runningState],
+        states: {
+          start: runningState,
+          array: [],
+          end: undefined
+        },
         items: currentItems,
         operators: operatorsWithNames,
         startState: runningState,
@@ -743,7 +817,11 @@ class MachineSimulator {
           timestamps: { start: runningState.timestamp },
           counts: [],
           misfeeds: [],
-          states: [runningState],
+          states: {
+            start: runningState,
+            array: [],
+            end: undefined
+          },
           items: currentItems,
           operator: op,
           startState: runningState,
@@ -806,7 +884,11 @@ class MachineSimulator {
           timestamps: { start: runningState.timestamp },
           counts: [],
           misfeeds: [],
-          states: [runningState],
+          states: {
+            start: runningState,
+            array: [],
+            end: undefined
+          },
           item: it,
           operators,
           startState: runningState,
@@ -856,8 +938,37 @@ class MachineSimulator {
 
       // Calculate end time (use current time for active sessions, or session end time for completed)
       const endTime = session.timestamps.end || new Date();
-      const startTime = DateTime.fromJSDate(session.timestamps.start);
-      const endDateTime = DateTime.fromJSDate(endTime);
+
+      // Parse timestamps defensively - handle both Date objects and ISO strings
+      let startTime;
+      if (session.timestamps.start instanceof Date) {
+        startTime = DateTime.fromJSDate(session.timestamps.start);
+      } else if (typeof session.timestamps.start === 'string') {
+        startTime = DateTime.fromISO(session.timestamps.start);
+      } else {
+        console.error(`[${this.getTimestamp()}] ❌ Invalid start timestamp format in session ${sessionId}`);
+        return;
+      }
+
+      let endDateTime;
+      if (endTime instanceof Date) {
+        endDateTime = DateTime.fromJSDate(endTime);
+      } else if (typeof endTime === 'string') {
+        endDateTime = DateTime.fromISO(endTime);
+      } else {
+        console.error(`[${this.getTimestamp()}] ❌ Invalid end timestamp format in session ${sessionId}`);
+        return;
+      }
+
+      // Validate parsed dates
+      if (!startTime.isValid) {
+        console.error(`[${this.getTimestamp()}] ❌ Invalid start time in session ${sessionId}: ${startTime.invalidReason}`);
+        return;
+      }
+      if (!endDateTime.isValid) {
+        console.error(`[${this.getTimestamp()}] ❌ Invalid end time in session ${sessionId}: ${endDateTime.invalidReason}`);
+        return;
+      }
 
       // Calculate runtime in seconds
       const runtime = endDateTime.diff(startTime, 'seconds').seconds;
@@ -1075,19 +1186,14 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const sessionCollection = db.collection(config.machineSessionCollectionName);
 
-      // Update session with end information
-      await sessionCollection.updateOne(
-        { _id: this.currentSessionId },
-        {
-          $set: {
-            'timestamps.end': endState.timestamp,
-            endState: endState
-          },
-          $push: {
-            states: endState
-          }
-        }
-      );
+      // Build update operation that works with both old and new formats
+      const updateOp = await this.buildSessionEndUpdate(sessionCollection, this.currentSessionId, endState);
+      if (!updateOp) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ Session ${this.currentSessionId} not found, skipping end`);
+        return;
+      }
+
+      await sessionCollection.updateOne({ _id: this.currentSessionId }, updateOp);
 
       // Run final stats calculation
       await this.updateSessionStats();
@@ -1129,17 +1235,11 @@ class MachineSimulator {
       const coll = db.collection(config.operatorSessionCollectionName);
 
       for (const [operatorId, opSessionId] of this.operatorSessionIdsByStation) {
-        await coll.updateOne(
-          { _id: opSessionId },
-          {
-            $set: {
-              'timestamps.end': endState.timestamp,
-              endState: endState
-            },
-            $push: { states: endState }
-          }
-        );
-        await this.recalculateOperatorSession(opSessionId);
+        const updateOp = await this.buildSessionEndUpdate(coll, opSessionId, endState);
+        if (updateOp) {
+          await coll.updateOne({ _id: opSessionId }, updateOp);
+          await this.recalculateOperatorSession(opSessionId);
+        }
         
         // ⭐ Sync in-memory cache array with updated session from DB
         const updatedSession = await coll.findOne({ _id: opSessionId });
@@ -1187,14 +1287,11 @@ class MachineSimulator {
 
       await Promise.all(
         openIds.map(async ({ _id }) => {
-          await coll.updateOne(
-            { _id },
-            {
-              $set: { "timestamps.end": endState.timestamp, endState },
-              $push: { states: endState }
-            }
-          );
-          await this.recalculateOperatorSession(_id);
+          const updateOp = await this.buildSessionEndUpdate(coll, _id, endState);
+          if (updateOp) {
+            await coll.updateOne({ _id }, updateOp);
+            await this.recalculateOperatorSession(_id);
+          }
         })
       );
     } catch (error) {
@@ -1209,14 +1306,11 @@ class MachineSimulator {
       const coll = db.collection(config.itemSessionCollectionName);
 
       for (const [itemId, sessId] of this.itemSessionIdsByItem) {
-        await coll.updateOne(
-          { _id: sessId },
-          {
-            $set: { 'timestamps.end': endState.timestamp, endState },
-            $push: { states: endState }
-          }
-        );
-        await this.recalculateItemSession(sessId);
+        const updateOp = await this.buildSessionEndUpdate(coll, sessId, endState);
+        if (updateOp) {
+          await coll.updateOne({ _id: sessId }, updateOp);
+          await this.recalculateItemSession(sessId);
+        }
         
         // ⭐ Sync in-memory cache array with updated session from DB
         const updatedSession = await coll.findOne({ _id: sessId });
@@ -1535,7 +1629,11 @@ class MachineSimulator {
         timestamps: { start: startState.timestamp },
         items,
         operators: ops,
-        states: [startState],
+        states: {
+          start: startState,
+          array: [],
+          end: undefined
+        },
         startState,
         machine: startState.machine,
         program: startState.program,
@@ -1564,12 +1662,14 @@ class MachineSimulator {
       const db = this.client.db(this.dbName);
       const coll = db.collection(config.faultSessionCollectionName);
 
-      // Push end state and set end timestamp
-      await coll.updateOne(
-        { _id: this.currentFaultSessionId },
-        { $set: { 'timestamps.end': endState.timestamp, endState }, $push: { states: endState } }
-      );
+      // Build update operation that works with both old and new formats
+      const updateOp = await this.buildSessionEndUpdate(coll, this.currentFaultSessionId, endState);
+      if (!updateOp) {
+        console.warn(`[${this.getTimestamp()}] ⚠️ Fault session ${this.currentFaultSessionId} not found, skipping end`);
+        return;
+      }
 
+      await coll.updateOne({ _id: this.currentFaultSessionId }, updateOp);
       await this.recalculateFaultSession(this.currentFaultSessionId);
       console.log(`[${this.getTimestamp()}] ✅ Ended fault session ${this.currentFaultSessionId}`);
       
@@ -1784,8 +1884,9 @@ class MachineSimulator {
         await db.collection(config.countMonthlyCollectionName).insertOne(adaptedRecord);
 
         await db.collection(config.stateTickerCollectionName).updateOne(
-          { "machine.id": adaptedRecord.machine.id },  // Using adapted record's machine.id
-          { $set: { timestamp: new Date() } }
+          { "machine.id": adaptedRecord.machine.id },
+          { $set: { timestamp: new Date() } },
+          { upsert: true }
         );
 
         // Update machine session with new count/misfeed
