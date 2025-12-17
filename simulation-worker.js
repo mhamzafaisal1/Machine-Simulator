@@ -56,6 +56,11 @@ class MachineSimulator {
     this.cachedItemSessions = new Map();              // itemId -> session array for today
     this.todayStart = null;                           // Midnight today (for filtering)
     this.cacheUpdateInterval = null;                  // Recurring interval for cache updates
+
+    // Shift management properties
+    this.shiftEndTimer = null;       // Timer for 11:58 PM shutdown
+    this.shiftStartTimer = null;     // Timer for 12:01 AM restart
+    this.isShiftTransition = false;  // Flag to prevent multiple transitions
   }
 
   // Helper method to check if machine is SPF
@@ -196,6 +201,9 @@ class MachineSimulator {
       
       // ⭐ Load today's sessions into memory for real-time cache building
       await this.loadTodaysSessions();
+
+      // ⭐ Schedule automatic shift end/start timers
+      this.scheduleShiftTimers();
 
       this.isRunning = true;
       await this.simulationLoop();
@@ -451,6 +459,116 @@ class MachineSimulator {
       clearInterval(this.cacheUpdateInterval);
       this.cacheUpdateInterval = null;
       console.log(`[${this.getTimestamp()}] ⏹️ Stopped cache update interval`);
+    }
+  }
+
+  /**
+   * ⭐ Schedules automatic shift end (11:58 PM) and shift start (12:01 AM)
+   * Reschedules daily to ensure timers stay accurate
+   */
+  scheduleShiftTimers() {
+    const SYSTEM_TIMEZONE = 'America/Chicago';
+
+    // Clear any existing timers
+    if (this.shiftEndTimer) clearTimeout(this.shiftEndTimer);
+    if (this.shiftStartTimer) clearTimeout(this.shiftStartTimer);
+
+    const now = DateTime.now().setZone(SYSTEM_TIMEZONE);
+
+    // Calculate next 11:58 PM (shift end)
+    let shiftEnd = now.set({ hour: 23, minute: 58, second: 0, millisecond: 0 });
+    if (now >= shiftEnd) {
+      // If past 11:58 PM today, schedule for tomorrow
+      shiftEnd = shiftEnd.plus({ days: 1 });
+    }
+
+    // Calculate next 12:01 AM (shift start) - always tomorrow since it's after midnight
+    // Start with tomorrow's date, then set to 12:01 AM
+    let shiftStart = now.plus({ days: 1 }).startOf('day').set({ hour: 0, minute: 1, second: 0, millisecond: 0 });
+
+    const msUntilShiftEnd = shiftEnd.toMillis() - now.toMillis();
+    const msUntilShiftStart = shiftStart.toMillis() - now.toMillis();
+
+    console.log(`[${this.getTimestamp()}] 📅 Scheduled shift end at ${shiftEnd.toFormat('yyyy-MM-dd HH:mm:ss')} (in ${Math.round(msUntilShiftEnd / 1000 / 60)} minutes)`);
+    console.log(`[${this.getTimestamp()}] 📅 Scheduled shift start at ${shiftStart.toFormat('yyyy-MM-dd HH:mm:ss')} (in ${Math.round(msUntilShiftStart / 1000 / 60)} minutes)`);
+
+    // Schedule shift end (11:58 PM)
+    this.shiftEndTimer = setTimeout(async () => {
+      await this.handleShiftEnd();
+    }, msUntilShiftEnd);
+
+    // Schedule shift start (12:01 AM) - only if machine is currently stopped
+    // If machine is running, start() will call scheduleShiftTimers() which schedules both timers
+    if (!this.isRunning) {
+      this.shiftStartTimer = setTimeout(async () => {
+        await this.handleShiftStart();
+      }, msUntilShiftStart);
+    }
+  }
+
+  /**
+   * ⭐ Handles shift end at 11:58 PM - graceful shutdown
+   * Mimics Ctrl+C behavior: stops machine, ends sessions, cleanup
+   */
+  async handleShiftEnd() {
+    if (this.isShiftTransition) {
+      console.log(`[${this.getTimestamp()}] ⏭️ Shift transition already in progress, skipping`);
+      return;
+    }
+
+    this.isShiftTransition = true;
+
+    try {
+      console.log(`[${this.getTimestamp()}] 🌙 SHIFT END - Stopping machine ${this.machineConfig.name} for end of day`);
+
+      // Call existing stop() method - does all cleanup
+      await this.stop();
+
+      console.log(`[${this.getTimestamp()}] ✅ Shift end complete - machine stopped cleanly`);
+
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error during shift end:`, error);
+    } finally {
+      this.isShiftTransition = false;
+    }
+  }
+
+  /**
+   * ⭐ Handles shift start at 12:01 AM - fresh restart
+   * Starts machine with clean state for new day
+   */
+  async handleShiftStart() {
+    if (this.isShiftTransition) {
+      console.log(`[${this.getTimestamp()}] ⏭️ Shift transition already in progress, skipping`);
+      return;
+    }
+
+    this.isShiftTransition = true;
+
+    try {
+      console.log(`[${this.getTimestamp()}] 🌅 SHIFT START - Starting machine ${this.machineConfig.name} for new day`);
+
+      // Wait a moment to ensure clean state
+      await this.delay(1000);
+
+      // Call existing start() method - does all initialization
+      await this.start();
+
+      console.log(`[${this.getTimestamp()}] ✅ Shift start complete - machine running for new day`);
+
+      // Reschedule timers for next day
+      this.scheduleShiftTimers();
+
+    } catch (error) {
+      console.error(`[${this.getTimestamp()}] ❌ Error during shift start:`, error);
+
+      // Retry in 1 minute if startup fails
+      console.log(`[${this.getTimestamp()}] 🔄 Retrying shift start in 1 minute...`);
+      setTimeout(async () => {
+        await this.handleShiftStart();
+      }, 60000);
+    } finally {
+      this.isShiftTransition = false;
     }
   }
 
@@ -1757,6 +1875,16 @@ class MachineSimulator {
     
     // ⭐ Stop the cache update interval
     this.stopCacheUpdateInterval();
+
+    // ⭐ Clear shift timers
+    if (this.shiftEndTimer) {
+      clearTimeout(this.shiftEndTimer);
+      this.shiftEndTimer = null;
+    }
+    if (this.shiftStartTimer) {
+      clearTimeout(this.shiftStartTimer);
+      this.shiftStartTimer = null;
+    }
 
     const endState = {
       timestamp: new Date(),
